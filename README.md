@@ -38,6 +38,36 @@ Use sempre `python -m uvicorn` (e não apenas `uvicorn`), para garantir que o se
 
 Teste: `curl http://localhost:8000/api/health` (no Windows, abra `http://localhost:8000/api/health` no navegador).
 
+### Criar as tabelas (migrações)
+
+Com o ambiente virtual ativo, a partir da pasta `backend/`:
+
+```bash
+python -m app.migrate
+```
+
+As migrações ficam em `backend/migrations/` e podem ser executadas mais de uma vez sem erro.
+
+### Cadastro de usuário
+
+`POST /api/auth/register` recebe `email`, `senha` (mínimo de 8 caracteres), `nome_exibicao` (1 a 40 caracteres), `aceite_termo` (precisa ser `true`) e `versao_termo`. Responde `201` com `id`, `email` e `nome_exibicao`, `409` se o e-mail já existir (sem diferenciar maiúsculas) e `422` para dados inválidos.
+
+### Testes do backend
+
+```bash
+cd backend
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Os testes que usam o banco gravam em `cspect_test`, e não no banco de desenvolvimento. Crie-o uma vez:
+
+```bash
+sudo -u postgres psql -c "CREATE DATABASE cspect_test OWNER cspect;"
+```
+
+Para usar outro banco, defina `TEST_DATABASE_URL`. A tabela `usuarios` desse banco é apagada e recriada durante os testes.
+
 ### Problemas comuns no Windows
 
 - **"A execução de scripts está desabilitada"** ao ativar o ambiente virtual ou rodar `npm`: rode `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, confirme com `S` e tente de novo.
