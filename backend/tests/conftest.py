@@ -26,7 +26,8 @@ def cliente(banco_migrado):
     from app.main import app
 
     with psycopg.connect(URL_BANCO_TESTE) as conexao:
-        conexao.execute("TRUNCATE usuarios RESTART IDENTITY")
+        # sessoes precisa entrar na lista: a FK dela para usuarios impede truncar só usuarios.
+        conexao.execute("TRUNCATE usuarios, sessoes RESTART IDENTITY")
 
     with TestClient(app) as cliente_http:
         yield cliente_http
