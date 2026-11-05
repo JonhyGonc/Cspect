@@ -60,10 +60,10 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Os testes que usam o banco gravam em `cspect_test`, e não no banco de desenvolvimento. Crie-o uma vez:
+Os testes que usam o banco gravam em `cspect_test`, e não no banco de desenvolvimento. Crie-o uma vez, dentro do `psql` (no Linux: `sudo -u postgres psql`; no Windows: SQL Shell (psql)):
 
-```bash
-sudo -u postgres psql -c "CREATE DATABASE cspect_test OWNER cspect;"
+```sql
+CREATE DATABASE cspect_test OWNER cspect;
 ```
 
 Para usar outro banco, defina `TEST_DATABASE_URL`. A tabela `usuarios` desse banco é apagada e recriada durante os testes.
