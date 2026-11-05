@@ -52,3 +52,23 @@ class UsuarioCriado(BaseModel):
     id: int
     email: str
     nome_exibicao: str
+
+
+class LoginRequest(BaseModel):
+    # Sem validação de formato de e-mail: um e-mail malformado recebe a mesma resposta
+    # genérica de "e-mail ou senha inválidos", sem revelar nada sobre as contas.
+    email: str = Field(max_length=254)
+    senha: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalizar_email(cls, valor: str) -> str:
+        return valor.strip().lower()
+
+
+class UsuarioSessao(BaseModel):
+    """Usuário da sessão ativa (login e /me). Nunca inclui senha nem hash."""
+
+    id: int
+    email: str
+    nome_exibicao: str

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://cspect:troque-esta-senha@localhost:5432/cspect"
     cors_origins: str = "http://localhost:5173"
+    # Em produção (HTTPS) defina COOKIE_SECURE=true, para o cookie de sessão só trafegar por HTTPS.
+    cookie_secure: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
