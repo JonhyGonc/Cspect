@@ -1,1 +1,0 @@
-{"version":"7.0.2","root":["./src/App.tsx","./src/main.tsx","./src/api/health.ts","./vite.config.ts"],"packageJsons":["./package.json"],"semanticErrors":true}

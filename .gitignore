@@ -19,3 +19,6 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Cache do TypeScript
+*.tsbuildinfo
