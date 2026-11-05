@@ -29,12 +29,19 @@ No Linux, por exemplo: `sudo -u postgres psql`. Troque `troque-esta-senha` por u
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env             # ajuste DATABASE_URL com a sua senha
-uvicorn app.main:app --reload --port 8000
+python -m pip install -r requirements.txt
+cp .env.example .env             # Windows: copy .env.example .env
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Teste: `curl http://localhost:8000/api/health`
+Use sempre `python -m uvicorn` (e não apenas `uvicorn`), para garantir que o servidor roda com as bibliotecas do ambiente virtual.
+
+Teste: `curl http://localhost:8000/api/health` (no Windows, abra `http://localhost:8000/api/health` no navegador).
+
+### Problemas comuns no Windows
+
+- **"A execução de scripts está desabilitada"** ao ativar o ambiente virtual ou rodar `npm`: rode `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, confirme com `S` e tente de novo.
+- **`uvicorn` não reconhecido:** o ambiente virtual não está ativo. Confirme que o prompt mostra `(.venv)` antes de rodar os comandos.
 
 ## 3. Configurar o frontend
 
