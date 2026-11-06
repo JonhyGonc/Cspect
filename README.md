@@ -66,7 +66,7 @@ Os testes que usam o banco gravam em `cspect_test`, e não no banco de desenvolv
 CREATE DATABASE cspect_test OWNER cspect;
 ```
 
-Para usar outro banco, defina `TEST_DATABASE_URL`. A tabela `usuarios` desse banco é apagada e recriada durante os testes.
+Para usar outro banco, defina `TEST_DATABASE_URL`. As tabelas desse banco (`usuarios`, `sessoes`, `funcoes`, `jogadores` e `jogador_funcoes_secundarias`) são apagadas e recriadas durante os testes.
 
 ### Problemas comuns no Windows
 

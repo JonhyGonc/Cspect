@@ -1,6 +1,6 @@
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 # Formato básico: algo@dominio.ext, sem espaços. Validação completa de e-mail
 # fica fora do escopo da Fase 2 para não adicionar dependências.
@@ -72,3 +72,64 @@ class UsuarioSessao(BaseModel):
     id: int
     email: str
     nome_exibicao: str
+
+
+# --- Jogadores (T3.1) ---------------------------------------------------------
+
+NICKNAME_MAX = 32
+OBSERVACOES_MAX = 500
+SECUNDARIAS_MAX = 5  # com 6 funções e a principal excluída, sobram no máximo 5
+
+# StrictInt: recusa true/false e textos como "1"; o limite superior é o do SMALLINT.
+IdFuncao = Field(ge=1, le=32767)
+
+
+class JogadorRequest(BaseModel):
+    """Dados para criar (POST) ou substituir (PUT) um jogador (RNF04)."""
+
+    nickname: str
+    funcao_principal_id: StrictInt = IdFuncao
+    funcoes_secundarias_ids: list[StrictInt] = Field(max_length=SECUNDARIAS_MAX)
+    observacoes: str | None = Field(default="", max_length=OBSERVACOES_MAX)
+
+    @field_validator("nickname")
+    @classmethod
+    def validar_nickname(cls, valor: str) -> str:
+        limpo = valor.strip()
+        if not 1 <= len(limpo) <= NICKNAME_MAX:
+            raise ValueError(f"O nickname deve ter entre 1 e {NICKNAME_MAX} caracteres.")
+        return limpo
+
+    @field_validator("funcoes_secundarias_ids")
+    @classmethod
+    def validar_secundarias(cls, valor: list[int]) -> list[int]:
+        if any(not 1 <= item <= 32767 for item in valor):
+            raise ValueError("Função secundária inexistente.")
+        if len(set(valor)) != len(valor):
+            raise ValueError("Uma função secundária não pode se repetir.")
+        return valor
+
+    @field_validator("observacoes")
+    @classmethod
+    def normalizar_observacoes(cls, valor: str | None) -> str:
+        return valor or ""
+
+    @model_validator(mode="after")
+    def secundaria_diferente_da_principal(self) -> "JogadorRequest":
+        if self.funcao_principal_id in self.funcoes_secundarias_ids:
+            raise ValueError("A função principal não pode ser também uma função secundária.")
+        return self
+
+
+class Funcao(BaseModel):
+    id: int
+    nome: str
+
+
+class Jogador(BaseModel):
+    id: int
+    nickname: str
+    avatar: str
+    funcao_principal: Funcao
+    funcoes_secundarias: list[Funcao]
+    observacoes: str

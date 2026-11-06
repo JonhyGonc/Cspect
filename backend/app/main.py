@@ -7,17 +7,19 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import check_database
 from app.routers.auth import router as auth_router
+from app.routers.jogadores import router as jogadores_router
 
 app = FastAPI(title="Cspect API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
 app.include_router(auth_router)
+app.include_router(jogadores_router)
 
 
 @app.exception_handler(RequestValidationError)
