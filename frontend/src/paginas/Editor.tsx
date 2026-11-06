@@ -14,6 +14,7 @@ import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
 import { mapaPorId } from "../editor/mapas";
 import { funcoesRepetidas, sugerirFuncoes, type Posicao } from "../editor/sugestao";
+import { useHistorico } from "../editor/useHistorico";
 import { Link, navegar } from "../roteamento";
 
 type CargaElenco =
@@ -35,6 +36,33 @@ function useLarguraJanela(): number {
   return largura;
 }
 
+// Atalhos de desfazer e refazer (RF16): Ctrl+Z desfaz; Ctrl+Y ou Ctrl+Shift+Z refaz
+// (Cmd no macOS). Em campo de texto ou select, o atalho fica com o navegador.
+function useAtalhosHistorico(desfazer: () => void, refazer: () => void) {
+  useEffect(() => {
+    function aoTeclar(evento: KeyboardEvent) {
+      if (!(evento.ctrlKey || evento.metaKey) || evento.altKey) return;
+      const alvo = evento.target;
+      if (
+        alvo instanceof HTMLElement &&
+        (alvo.isContentEditable || alvo.closest("input, textarea, select, [contenteditable]") !== null)
+      ) {
+        return;
+      }
+      const tecla = evento.key.toLowerCase();
+      if (tecla === "z" && !evento.shiftKey) {
+        evento.preventDefault();
+        desfazer();
+      } else if ((tecla === "y" && !evento.shiftKey) || (tecla === "z" && evento.shiftKey)) {
+        evento.preventDefault();
+        refazer();
+      }
+    }
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [desfazer, refazer]);
+}
+
 function formatar(valor: number): string {
   return valor.toFixed(4);
 }
@@ -49,10 +77,24 @@ export function Editor({ mapaId }: { mapaId: string }) {
   const [elenco, setElenco] = useState<CargaElenco>({ fase: "carregando" });
   // Por id do jogador: coordenadas normalizadas (0 a 1) em relação à orientação original
   // do PNG e a função usada nesta tática (RF08). Só no estado da tela nesta etapa.
-  const [posicoes, setPosicoes] = useState<Record<number, Posicao>>({});
+  // Toda alteração passa pelo histórico (RF16): cada chamada de `alterar` é uma ação.
+  const historico = useHistorico<Record<number, Posicao>>({});
+  const { estado: posicoes, alterar } = historico;
   const [aviso, setAviso] = useState<Aviso | null>(null);
+  // Rotação e lado são só de visualização: ficam fora do histórico.
   const [rotacao, setRotacao] = useState<Rotacao>(0);
   const [lado, setLado] = useState<Lado>("T");
+
+  // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai.
+  const desfazer = useCallback(() => {
+    setAviso(null);
+    historico.desfazer();
+  }, [historico.desfazer]);
+  const refazer = useCallback(() => {
+    setAviso(null);
+    historico.refazer();
+  }, [historico.refazer]);
+  useAtalhosHistorico(desfazer, refazer);
 
   const carregarElenco = useCallback(async () => {
     setElenco({ fase: "carregando" });
@@ -74,14 +116,19 @@ export function Editor({ mapaId }: { mapaId: string }) {
   }, [logado, carregarElenco]);
 
   // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
-  const posicionar = useCallback((jogadorId: number, ponto: Ponto) => {
-    setPosicoes((atual) => ({ ...atual, [jogadorId]: { ...ponto, funcaoId: atual[jogadorId]?.funcaoId ?? null } }));
-  }, []);
+  // É chamado só no fim do arraste (drop do elenco ou dragEnd no mapa): um arraste = uma ação.
+  const posicionar = useCallback(
+    (jogadorId: number, ponto: Ponto) => {
+      alterar((atual) => ({ ...atual, [jogadorId]: { ...ponto, funcaoId: atual[jogadorId]?.funcaoId ?? null } }));
+    },
+    [alterar],
+  );
 
   // Tirar do mapa libera a função para uma nova sugestão.
   function tirarDoMapa(jogadorId: number) {
     setAviso(null);
-    setPosicoes((atual) => {
+    alterar((atual) => {
+      if (!atual[jogadorId]) return atual;
       const copia = { ...atual };
       delete copia[jogadorId];
       return copia;
@@ -91,7 +138,11 @@ export function Editor({ mapaId }: { mapaId: string }) {
   // Troca a função só nesta tática; o cadastro do jogador não muda.
   function trocarFuncao(jogadorId: number, funcaoId: number | null) {
     setAviso(null);
-    setPosicoes((atual) => (atual[jogadorId] ? { ...atual, [jogadorId]: { ...atual[jogadorId], funcaoId } } : atual));
+    alterar((atual) =>
+      atual[jogadorId] && atual[jogadorId].funcaoId !== funcaoId
+        ? { ...atual, [jogadorId]: { ...atual[jogadorId], funcaoId } }
+        : atual,
+    );
   }
 
   const usuario = sessao.fase === "pronto" ? sessao.usuario : null;
@@ -104,7 +155,8 @@ export function Editor({ mapaId }: { mapaId: string }) {
 
   function sugerir() {
     const resultado = sugerirFuncoes(lista, posicoes);
-    setPosicoes(resultado.posicoes);
+    // O lote inteiro é uma ação só; sem nenhuma função sugerida, nada entra no histórico.
+    if (resultado.sugeridas.length > 0) alterar(() => resultado.posicoes);
     const linhas: string[] = [];
     const n = resultado.sugeridas.length;
     linhas.push(n === 0 ? "Nenhuma função sugerida." : n === 1 ? "1 função sugerida." : `${n} funções sugeridas.`);
@@ -231,6 +283,26 @@ export function Editor({ mapaId }: { mapaId: string }) {
                 </Link>
               </div>
               <div className="flex items-center gap-3">
+                <div role="group" aria-label="Histórico" className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={desfazer}
+                    disabled={!historico.podeDesfazer}
+                    title="Desfazer (Ctrl+Z)"
+                    className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
+                  >
+                    Desfazer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={refazer}
+                    disabled={!historico.podeRefazer}
+                    title="Refazer (Ctrl+Y ou Ctrl+Shift+Z)"
+                    className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
+                  >
+                    Refazer
+                  </button>
+                </div>
                 <div role="group" aria-label="Lado" className="flex overflow-hidden rounded-md border border-white/10">
                   {(["T", "CT"] as const).map((opcao) => (
                     <button
