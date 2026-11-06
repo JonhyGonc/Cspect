@@ -34,11 +34,12 @@ type LinkProps = {
   para: string;
   children: ReactNode;
   className?: string;
+  "aria-current"?: "page";
 };
 
 // Link que navega sem recarregar a página. Cliques com Ctrl, Shift ou botão do meio
 // seguem o comportamento padrão (abrir em nova aba).
-export function Link({ para, children, className }: LinkProps) {
+export function Link({ para, children, className, "aria-current": ariaCurrent }: LinkProps) {
   function aoClicar(evento: MouseEvent<HTMLAnchorElement>) {
     if (evento.metaKey || evento.ctrlKey || evento.shiftKey || evento.button !== 0) return;
     evento.preventDefault();
@@ -46,7 +47,7 @@ export function Link({ para, children, className }: LinkProps) {
   }
 
   return (
-    <a href={para} onClick={aoClicar} className={className}>
+    <a href={para} onClick={aoClicar} className={className} aria-current={ariaCurrent}>
       {children}
     </a>
   );

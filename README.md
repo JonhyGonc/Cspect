@@ -85,6 +85,15 @@ npm run dev
 
 Abra `http://localhost:5173`. A página mostra o status da API e do banco.
 
+### Telas
+
+| Rota | Conteúdo |
+|---|---|
+| `/cadastro` e `/login` | Criação de conta e entrada. |
+| `/biblioteca` | Biblioteca de táticas (ainda vazia), com link para Jogadores. |
+| `/jogadores` | Lista do elenco e formulário de cadastro e edição de jogadores. Sem sessão, redireciona para `/login`. |
+| `/status` | Status da API e do banco. |
+
 ## Verificações
 
 - Com o banco ligado, a página mostra **API: ok** e **Banco: ok**.
