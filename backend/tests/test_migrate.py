@@ -13,10 +13,14 @@ def _tabela_existe() -> bool:
 
 def test_migracao_cria_tabela_e_pode_rodar_de_novo(banco_migrado):
     with psycopg.connect(URL_BANCO_TESTE) as conexao:
-        # sessoes precisa ser apagada junto: a FK dela impede apagar só usuarios.
-        conexao.execute("DROP TABLE IF EXISTS sessoes, usuarios")
+        # As tabelas que dependem de usuarios precisam ser apagadas junto, por causa das FKs.
+        conexao.execute(
+            "DROP TABLE IF EXISTS jogador_funcoes_secundarias, jogadores, funcoes, sessoes, usuarios"
+        )
 
     aplicar_migracoes()
     aplicar_migracoes()  # segunda execução não pode falhar
 
     assert _tabela_existe()
+    with psycopg.connect(URL_BANCO_TESTE) as conexao:
+        assert conexao.execute("SELECT count(*) FROM funcoes").fetchone()[0] == 6
