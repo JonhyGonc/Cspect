@@ -1,14 +1,27 @@
 import { useCallback, useEffect, useState, type DragEvent } from "react";
-import { listarJogadores, mensagemDoErro, statusDoErro, type Jogador } from "../api/jogadores";
+import {
+  listarFuncoes,
+  listarJogadores,
+  mensagemDoErro,
+  statusDoErro,
+  type Funcao,
+  type Jogador,
+} from "../api/jogadores";
 import { Avatar } from "../componentes/Avatar";
 import { Cabecalho } from "../componentes/Cabecalho";
 import { MapaEditor, TIPO_ARRASTE_JOGADOR, type Lado } from "../componentes/MapaEditor";
 import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
 import { mapaPorId } from "../editor/mapas";
+import { funcoesRepetidas, sugerirFuncoes, type Posicao } from "../editor/sugestao";
 import { Link, navegar } from "../roteamento";
 
-type Carga<T> = { fase: "carregando" } | { fase: "pronto"; dados: T } | { fase: "erro"; mensagem: string };
+type CargaElenco =
+  | { fase: "carregando" }
+  | { fase: "pronto"; dados: { jogadores: Jogador[]; funcoes: Funcao[] } }
+  | { fase: "erro"; mensagem: string };
+
+type Aviso = { tipo: "sucesso" | "atencao"; linhas: string[] };
 
 const LARGURA_MINIMA = 1280; // RNF10
 
@@ -33,36 +46,41 @@ export function Editor({ mapaId }: { mapaId: string }) {
   const mapa = mapaPorId(mapaId);
   const larguraJanela = useLarguraJanela();
 
-  const [jogadores, setJogadores] = useState<Carga<Jogador[]>>({ fase: "carregando" });
-  // Coordenadas normalizadas (0 a 1) em relação à orientação original do PNG, por id do jogador.
-  const [posicoes, setPosicoes] = useState<Record<number, Ponto>>({});
+  const [elenco, setElenco] = useState<CargaElenco>({ fase: "carregando" });
+  // Por id do jogador: coordenadas normalizadas (0 a 1) em relação à orientação original
+  // do PNG e a função usada nesta tática (RF08). Só no estado da tela nesta etapa.
+  const [posicoes, setPosicoes] = useState<Record<number, Posicao>>({});
+  const [aviso, setAviso] = useState<Aviso | null>(null);
   const [rotacao, setRotacao] = useState<Rotacao>(0);
   const [lado, setLado] = useState<Lado>("T");
 
-  const carregarJogadores = useCallback(async () => {
-    setJogadores({ fase: "carregando" });
+  const carregarElenco = useCallback(async () => {
+    setElenco({ fase: "carregando" });
     try {
-      const lista = await listarJogadores();
-      setJogadores({ fase: "pronto", dados: lista });
+      const [jogadores, funcoes] = await Promise.all([listarJogadores(), listarFuncoes()]);
+      setElenco({ fase: "pronto", dados: { jogadores, funcoes } });
     } catch (falha) {
       if (statusDoErro(falha) === 401) {
         navegar("/login", { substituir: true });
         return;
       }
-      setJogadores({ fase: "erro", mensagem: mensagemDoErro(falha) });
+      setElenco({ fase: "erro", mensagem: mensagemDoErro(falha) });
     }
   }, []);
 
   const logado = sessao.fase === "pronto";
   useEffect(() => {
-    if (logado) void carregarJogadores();
-  }, [logado, carregarJogadores]);
+    if (logado) void carregarElenco();
+  }, [logado, carregarElenco]);
 
+  // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
   const posicionar = useCallback((jogadorId: number, ponto: Ponto) => {
-    setPosicoes((atual) => ({ ...atual, [jogadorId]: ponto }));
+    setPosicoes((atual) => ({ ...atual, [jogadorId]: { ...ponto, funcaoId: atual[jogadorId]?.funcaoId ?? null } }));
   }, []);
 
+  // Tirar do mapa libera a função para uma nova sugestão.
   function tirarDoMapa(jogadorId: number) {
+    setAviso(null);
     setPosicoes((atual) => {
       const copia = { ...atual };
       delete copia[jogadorId];
@@ -70,8 +88,33 @@ export function Editor({ mapaId }: { mapaId: string }) {
     });
   }
 
+  // Troca a função só nesta tática; o cadastro do jogador não muda.
+  function trocarFuncao(jogadorId: number, funcaoId: number | null) {
+    setAviso(null);
+    setPosicoes((atual) => (atual[jogadorId] ? { ...atual, [jogadorId]: { ...atual[jogadorId], funcaoId } } : atual));
+  }
+
   const usuario = sessao.fase === "pronto" ? sessao.usuario : null;
-  const lista = jogadores.fase === "pronto" ? jogadores.dados : [];
+  const lista = elenco.fase === "pronto" ? elenco.dados.jogadores : [];
+  const funcoes = elenco.fase === "pronto" ? elenco.dados.funcoes : [];
+  const nomesFuncoes = Object.fromEntries(funcoes.map((f) => [f.id, f.nome])) as Record<number, string>;
+  const nickPorId = Object.fromEntries(lista.map((j) => [j.id, j.nickname])) as Record<number, string>;
+  const repetidas = funcoesRepetidas(posicoes);
+  const vazias = lista.filter((j) => posicoes[j.id]?.funcaoId === null).length;
+
+  function sugerir() {
+    const resultado = sugerirFuncoes(lista, posicoes);
+    setPosicoes(resultado.posicoes);
+    const linhas: string[] = [];
+    const n = resultado.sugeridas.length;
+    linhas.push(n === 0 ? "Nenhuma função sugerida." : n === 1 ? "1 função sugerida." : `${n} funções sugeridas.`);
+    for (const item of resultado.semSugestao) {
+      linhas.push(
+        `${nickPorId[item.jogadorId]} ficou sem função: ${nomesFuncoes[item.funcaoId] ?? "a função principal"} já está com ${nickPorId[item.ocupadaPor]}.`,
+      );
+    }
+    setAviso({ tipo: resultado.semSugestao.length > 0 ? "atencao" : "sucesso", linhas });
+  }
 
   return (
     <main className="flex h-screen min-w-0 flex-col gap-4 p-4">
@@ -112,22 +155,22 @@ export function Editor({ mapaId }: { mapaId: string }) {
             </h2>
             <p className="text-xs opacity-60">Arraste um jogador para o mapa.</p>
 
-            {jogadores.fase === "carregando" && <p className="text-sm opacity-70">Carregando jogadores...</p>}
-            {jogadores.fase === "erro" && (
+            {elenco.fase === "carregando" && <p className="text-sm opacity-70">Carregando jogadores...</p>}
+            {elenco.fase === "erro" && (
               <div className="flex flex-col items-start gap-2">
                 <p role="alert" className="text-sm text-red-400">
-                  {jogadores.mensagem}
+                  {elenco.mensagem}
                 </p>
                 <button
                   type="button"
-                  onClick={() => void carregarJogadores()}
+                  onClick={() => void carregarElenco()}
                   className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque"
                 >
                   Tentar de novo
                 </button>
               </div>
             )}
-            {jogadores.fase === "pronto" && lista.length === 0 && (
+            {elenco.fase === "pronto" && lista.length === 0 && (
               <p className="text-sm opacity-70">
                 Nenhum jogador cadastrado.{" "}
                 <Link para="/jogadores" className="font-semibold text-destaque underline">
@@ -137,12 +180,41 @@ export function Editor({ mapaId }: { mapaId: string }) {
               </p>
             )}
             {lista.length > 0 && (
+              <button
+                type="button"
+                onClick={sugerir}
+                disabled={vazias === 0}
+                title={
+                  vazias === 0 ? "Coloque jogadores no mapa; a sugestão preenche quem está sem função." : undefined
+                }
+                className="rounded-md border border-destaque px-3 py-1.5 text-sm font-bold text-destaque transition hover:bg-destaque hover:text-fundo disabled:cursor-not-allowed disabled:border-white/10 disabled:text-texto disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Sugerir funções
+              </button>
+            )}
+            {aviso && (
+              <div
+                role="status"
+                className={
+                  "rounded-md px-3 py-2 text-xs " +
+                  (aviso.tipo === "atencao" ? "border border-destaque/40 bg-destaque/10" : "bg-fundo text-destaque")
+                }
+              >
+                {aviso.linhas.map((linha) => (
+                  <p key={linha}>{linha}</p>
+                ))}
+              </div>
+            )}
+            {lista.length > 0 && (
               <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" aria-label="Jogadores do elenco">
                 {lista.map((jogador) => (
                   <ItemElenco
                     key={jogador.id}
                     jogador={jogador}
                     posicao={posicoes[jogador.id] ?? null}
+                    funcoes={funcoes}
+                    repetida={posicoes[jogador.id]?.funcaoId != null && repetidas.has(posicoes[jogador.id].funcaoId!)}
+                    aoTrocarFuncao={(funcaoId) => trocarFuncao(jogador.id, funcaoId)}
                     aoTirar={() => tirarDoMapa(jogador.id)}
                   />
                 ))}
@@ -195,6 +267,7 @@ export function Editor({ mapaId }: { mapaId: string }) {
                 lado={lado}
                 jogadores={lista}
                 posicoes={posicoes}
+                nomesFuncoes={nomesFuncoes}
                 aoPosicionar={posicionar}
               />
             </div>
@@ -207,11 +280,14 @@ export function Editor({ mapaId }: { mapaId: string }) {
 
 type ItemElencoProps = {
   jogador: Jogador;
-  posicao: Ponto | null;
+  posicao: Posicao | null;
+  funcoes: Funcao[];
+  repetida: boolean;
+  aoTrocarFuncao: (funcaoId: number | null) => void;
   aoTirar: () => void;
 };
 
-function ItemElenco({ jogador, posicao, aoTirar }: ItemElencoProps) {
+function ItemElenco({ jogador, posicao, funcoes, repetida, aoTrocarFuncao, aoTirar }: ItemElencoProps) {
   function aoComecarArraste(evento: DragEvent<HTMLLIElement>) {
     evento.dataTransfer.setData(TIPO_ARRASTE_JOGADOR, String(jogador.id));
     evento.dataTransfer.effectAllowed = "move";
@@ -225,25 +301,52 @@ function ItemElenco({ jogador, posicao, aoTirar }: ItemElencoProps) {
       data-jogador-id={jogador.id}
       data-x={posicao ? formatar(posicao.x) : undefined}
       data-y={posicao ? formatar(posicao.y) : undefined}
-      className="flex cursor-grab items-center gap-3 rounded-md border border-white/5 bg-fundo p-2 active:cursor-grabbing"
+      data-funcao-id={posicao?.funcaoId ?? undefined}
+      className="flex cursor-grab flex-col gap-2 rounded-md border border-white/5 bg-fundo p-2 active:cursor-grabbing"
     >
-      <Avatar iniciais={jogador.avatar} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-bold" title={jogador.nickname}>
-          {jogador.nickname}
-        </p>
-        <p className="truncate text-xs opacity-60">{jogador.funcao_principal.nome}</p>
+      <div className="flex items-center gap-3">
+        <Avatar iniciais={jogador.avatar} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-bold" title={jogador.nickname}>
+            {jogador.nickname}
+          </p>
+          <p className="truncate text-xs opacity-60" title={`Função principal: ${jogador.funcao_principal.nome}`}>
+            Principal: {jogador.funcao_principal.nome}
+          </p>
+        </div>
+        {posicao && (
+          <button
+            type="button"
+            onClick={aoTirar}
+            aria-label={`Tirar ${jogador.nickname} do mapa`}
+            title="Tirar do mapa"
+            className="shrink-0 rounded px-1.5 text-sm opacity-60 transition hover:text-red-400 hover:opacity-100"
+          >
+            ✕
+          </button>
+        )}
       </div>
       {posicao && (
-        <button
-          type="button"
-          onClick={aoTirar}
-          aria-label={`Tirar ${jogador.nickname} do mapa`}
-          title="Tirar do mapa"
-          className="shrink-0 rounded px-1.5 text-sm opacity-60 transition hover:text-red-400 hover:opacity-100"
-        >
-          ✕
-        </button>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="opacity-60">Função nesta tática</span>
+          <select
+            value={posicao.funcaoId ?? ""}
+            onChange={(e) => aoTrocarFuncao(e.target.value === "" ? null : Number(e.target.value))}
+            aria-label={`Função de ${jogador.nickname} nesta tática`}
+            className={
+              "rounded-md border bg-painel px-2 py-1 text-sm " +
+              (posicao.funcaoId === null ? "border-white/10 opacity-70" : "border-destaque/60 text-destaque")
+            }
+          >
+            <option value="">Sem função</option>
+            {funcoes.map((funcao) => (
+              <option key={funcao.id} value={funcao.id}>
+                {funcao.nome}
+              </option>
+            ))}
+          </select>
+          {repetida && <span className="text-destaque">Outro jogador no mapa está com esta função.</span>}
+        </label>
       )}
     </li>
   );

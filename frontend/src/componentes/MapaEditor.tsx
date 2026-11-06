@@ -12,6 +12,7 @@ import {
   type Rotacao,
 } from "../editor/coordenadas";
 import type { Mapa } from "../editor/mapas";
+import type { Posicao } from "../editor/sugestao";
 
 // Tipo usado no arrastar e soltar do elenco (HTML) para o mapa (canvas).
 export const TIPO_ARRASTE_JOGADOR = "application/x-cspect-jogador";
@@ -21,6 +22,7 @@ export type Lado = "T" | "CT";
 const COR_LADO: Record<Lado, string> = { T: "#E07B39", CT: "#4A90D9" };
 const COR_FUNDO = "#14161A";
 const COR_TEXTO = "#E8EAED";
+const COR_DESTAQUE = "#F5A623";
 const RAIO_JOGADOR = 16;
 
 type EstadoImagem = { fase: "carregando" } | { fase: "pronto"; imagem: HTMLImageElement } | { fase: "erro" };
@@ -70,13 +72,15 @@ type Props = {
   rotacao: Rotacao;
   lado: Lado;
   jogadores: Jogador[];
-  posicoes: Record<number, Ponto>;
+  posicoes: Record<number, Posicao>;
+  // Nome de cada função por id (GET /api/funcoes), para o rótulo no mapa.
+  nomesFuncoes: Record<number, string>;
   aoPosicionar: (jogadorId: number, ponto: Ponto) => void;
 };
 
 // Mapa do editor com Konva (seção 10): imagem de fundo na proporção original, girada
 // só na tela, e os jogadores posicionados em coordenadas normalizadas (RF08).
-export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, aoPosicionar }: Props) {
+export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, nomesFuncoes, aoPosicionar }: Props) {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const { largura, altura } = useTamanho(areaRef);
@@ -140,11 +144,13 @@ export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, aoPosicio
             {jogadores.map((jogador) => {
               const ponto = posicoes[jogador.id];
               if (!ponto) return null;
+              const funcao = ponto.funcaoId === null ? null : (nomesFuncoes[ponto.funcaoId] ?? null);
               return (
                 <MarcadorJogador
                   key={jogador.id}
                   jogador={jogador}
                   cor={COR_LADO[lado]}
+                  funcao={funcao}
                   posicao={normalizadoParaTela(ponto, rotacao, quadro)}
                   quadro={quadro}
                   aoSoltar={(tela) => aoPosicionar(jogador.id, telaParaNormalizado(tela, rotacao, quadro))}
@@ -162,13 +168,14 @@ export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, aoPosicio
 type MarcadorProps = {
   jogador: Jogador;
   cor: string;
+  funcao: string | null;
   posicao: Ponto;
   quadro: Enquadramento;
   aoSoltar: (tela: Ponto) => void;
   areaRef: RefObject<HTMLDivElement>;
 };
 
-function MarcadorJogador({ jogador, cor, posicao, quadro, aoSoltar, areaRef }: MarcadorProps) {
+function MarcadorJogador({ jogador, cor, funcao, posicao, quadro, aoSoltar, areaRef }: MarcadorProps) {
   function cursor(valor: string) {
     if (areaRef.current) areaRef.current.style.cursor = valor;
   }
@@ -218,6 +225,24 @@ function MarcadorJogador({ jogador, cor, posicao, quadro, aoSoltar, areaRef }: M
         wrap="none"
         ellipsis
       />
+      {/* Função usada nesta tática (RF08); sem função, a posição mostra só o nickname. */}
+      {funcao && (
+        <Text
+          text={funcao}
+          width={120}
+          offsetX={60}
+          y={RAIO_JOGADOR + 16}
+          align="center"
+          fontSize={10}
+          fontStyle="bold"
+          fill={COR_DESTAQUE}
+          shadowColor={COR_FUNDO}
+          shadowBlur={3}
+          shadowOpacity={1}
+          wrap="none"
+          ellipsis
+        />
+      )}
     </Group>
   );
 }
