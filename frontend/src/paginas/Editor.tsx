@@ -311,8 +311,8 @@ function ItemElenco({ jogador, posicao, funcoes, repetida, aoTrocarFuncao, aoTir
             {jogador.nickname}
           </p>
           <p className="truncate text-xs opacity-60" title={`Função principal: ${jogador.funcao_principal.nome}`}>
-              Principal: {jogador.funcao_principal.nome}
-            </p>
+            Principal: {jogador.funcao_principal.nome}
+          </p>
         </div>
         {posicao && (
           <button
