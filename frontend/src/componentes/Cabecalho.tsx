@@ -2,11 +2,12 @@ import { useState } from "react";
 import { mensagemDeErro, sair, type Usuario } from "../api/auth";
 import { Link, navegar } from "../roteamento";
 
-type Secao = "biblioteca" | "jogadores";
+type Secao = "biblioteca" | "jogadores" | "editor";
 
 const LINKS: { secao: Secao; para: string; rotulo: string }[] = [
   { secao: "biblioteca", para: "/biblioteca", rotulo: "Biblioteca" },
   { secao: "jogadores", para: "/jogadores", rotulo: "Jogadores" },
+  { secao: "editor", para: "/editor", rotulo: "Nova tática" },
 ];
 
 // Cabeçalho das telas logadas: marca, navegação entre áreas, usuário e botão de sair.
