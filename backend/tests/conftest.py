@@ -29,7 +29,8 @@ def cliente(banco_migrado):
         # As tabelas com FK para usuarios precisam entrar na lista, senão o TRUNCATE falha.
         # funcoes não entra: é a lista fixa preenchida pela migração 003.
         conexao.execute(
-            "TRUNCATE usuarios, sessoes, jogadores, jogador_funcoes_secundarias RESTART IDENTITY"
+            "TRUNCATE usuarios, sessoes, jogadores, jogador_funcoes_secundarias, taticas, quadros, posicoes_quadro"
+            " RESTART IDENTITY"
         )
 
     with TestClient(app) as cliente_http:

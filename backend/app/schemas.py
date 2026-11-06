@@ -1,6 +1,8 @@
 import re
+from datetime import datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 # Formato básico: algo@dominio.ext, sem espaços. Validação completa de e-mail
 # fica fora do escopo da Fase 2 para não adicionar dependências.
@@ -133,3 +135,77 @@ class Jogador(BaseModel):
     funcao_principal: Funcao
     funcoes_secundarias: list[Funcao]
     observacoes: str
+
+
+# --- Táticas, plano fixo (T4.4) ----------------------------------------------
+
+NOME_TATICA_MAX = 60
+POSICOES_MAX = 20  # por quadro: folga sobre os 5 jogadores de um lado, sem abrir para abuso
+
+MapaId = Literal["ancient", "anubis", "cache", "dust2", "inferno", "mirage", "nuke"]
+Lado = Literal["T", "CT"]
+Visibilidade = Literal["privada", "publica"]
+# Coordenada normalizada: número finito de 0 a 1 (recusa NaN, infinito, texto e booleano).
+Coordenada = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
+IdJogadorNaTatica = Annotated[int, Field(strict=True, ge=1, le=9_223_372_036_854_775_807)]
+IdFuncaoNaTatica = Annotated[int, Field(strict=True, ge=1, le=32767)]
+
+
+class PosicaoQuadro(BaseModel):
+    """Posição de jogador no quadro (RF08): jogador (pode ser nulo, RF08A), função e coordenadas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jogador_id: IdJogadorNaTatica | None = None
+    funcao_id: IdFuncaoNaTatica | None = None
+    x: Coordenada
+    y: Coordenada
+
+
+class _DadosTatica(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nome: str
+    lado: Lado
+    visibilidade: Visibilidade = "privada"
+    posicoes: list[PosicaoQuadro] = Field(max_length=POSICOES_MAX)
+
+    @field_validator("nome")
+    @classmethod
+    def validar_nome(cls, valor: str) -> str:
+        limpo = valor.strip()
+        if not 1 <= len(limpo) <= NOME_TATICA_MAX:
+            raise ValueError(f"O nome da tática deve ter entre 1 e {NOME_TATICA_MAX} caracteres.")
+        return limpo
+
+    @field_validator("posicoes")
+    @classmethod
+    def jogador_uma_vez(cls, valor: list[PosicaoQuadro]) -> list[PosicaoQuadro]:
+        ids = [p.jogador_id for p in valor if p.jogador_id is not None]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Cada jogador pode ocupar só uma posição no plano.")
+        return valor
+
+
+class TaticaCriar(_DadosTatica):
+    """POST /api/taticas: o mapa é escolhido na criação e não muda depois."""
+
+    mapa_id: MapaId
+
+
+class TaticaAtualizar(_DadosTatica):
+    """PUT /api/taticas/{id}: substitui nome, lado, visibilidade e o plano fixo."""
+
+
+class TaticaResumo(BaseModel):
+    id: int
+    nome: str
+    mapa_id: str
+    lado: str
+    visibilidade: str
+    alterada_em: datetime
+
+
+class Tatica(TaticaResumo):
+    criada_em: datetime
+    posicoes: list[PosicaoQuadro]
