@@ -15,7 +15,7 @@ def test_migracao_cria_tabela_e_pode_rodar_de_novo(banco_migrado):
     with psycopg.connect(URL_BANCO_TESTE) as conexao:
         # As tabelas que dependem de usuarios precisam ser apagadas junto, por causa das FKs.
         conexao.execute(
-            "DROP TABLE IF EXISTS tracos, utilitarios_quadro, posicoes_quadro, quadros, taticas,"
+            "DROP TABLE IF EXISTS tracos, utilitarios_quadro, posicoes_quadro, quadros, sequencias, taticas,"
             " jogador_funcoes_secundarias, jogadores, funcoes, sessoes, usuarios"
         )
 

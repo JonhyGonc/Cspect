@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   listarFuncoes,
   listarJogadores,
@@ -15,25 +15,31 @@ import {
   type Tatica,
   type Visibilidade,
 } from "../api/taticas";
+import { listarSequencias, type SequenciaApi } from "../api/sequencias";
 import { BarraUtilitarios } from "../componentes/BarraUtilitarios";
 import { Cabecalho } from "../componentes/Cabecalho";
 import { CamadaCaptura, CamadaPlano, MenuCaminho } from "../componentes/CamadaDesenho";
 import { IndicadorSalvamento } from "../componentes/IndicadorSalvamento";
 import { ItemElenco, ItemSemJogador } from "../componentes/ItensElenco";
+import { LinhaDoTempo } from "../componentes/LinhaDoTempo";
 import { COR_LADO, MapaEditor, type Lado } from "../componentes/MapaEditor";
 import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
+import { GravadorSequencia } from "../editor/GravadorSequencia";
 import { mapaPorId, type Mapa } from "../editor/mapas";
 import { PLANO_VAZIO, planoDaApi, planoParaApi, type Plano } from "../editor/plano";
+import { adicionarMarcacao, apagarMarcacao } from "../editor/sequencias";
 import { funcoesRepetidas, sugerirFuncoes, type Posicao } from "../editor/sugestao";
-import { useFerramentas, type Ferramentas } from "../editor/useFerramentas";
+import { useAtalhosFerramentas, useAtalhosHistorico } from "../editor/atalhos";
+import { useFerramentas } from "../editor/useFerramentas";
 import { useHistorico } from "../editor/useHistorico";
+import { useLinhaDoTempo } from "../editor/useLinhaDoTempo";
 import { useSalvamento } from "../editor/useSalvamento";
 import { Link, navegar } from "../roteamento";
 
 type Carga =
   | { fase: "carregando" }
-  | { fase: "pronto"; jogadores: Jogador[]; funcoes: Funcao[]; tatica: Tatica | null }
+  | { fase: "pronto"; jogadores: Jogador[]; funcoes: Funcao[]; tatica: Tatica | null; sequencias: SequenciaApi[] }
   | { fase: "nao-encontrada" }
   | { fase: "erro"; mensagem: string };
 
@@ -53,61 +59,6 @@ function useLarguraJanela(): number {
   return largura;
 }
 
-// Atalhos de desfazer e refazer (RF16): Ctrl+Z desfaz; Ctrl+Y ou Ctrl+Shift+Z refaz
-// (Cmd no macOS). Em campo de texto ou select, o atalho fica com o navegador.
-function campoDeTexto(alvo: EventTarget | null): boolean {
-  return (
-    alvo instanceof HTMLElement &&
-    (alvo.isContentEditable || alvo.closest("input, textarea, select, [contenteditable]") !== null)
-  );
-}
-
-// Atalhos das ferramentas (fora de campos de texto e select):
-// Delete ou Backspace apaga o item selecionado; Esc fecha o menu, sai do modo ou tira a
-// seleção; Enter, no modo de caminho, grava o rascunho com "definir caminho" (RF09).
-function useAtalhosFerramentas(f: Ferramentas) {
-  useEffect(() => {
-    function aoTeclar(evento: KeyboardEvent) {
-      if (evento.ctrlKey || evento.metaKey || evento.altKey || campoDeTexto(evento.target)) return;
-      if (evento.key === "Delete" || evento.key === "Backspace") {
-        if (!f.selecao) return;
-        evento.preventDefault();
-        f.apagar();
-      } else if (evento.key === "Escape") {
-        if (f.menu) f.setMenu(null);
-        else if (f.modo.tipo !== "normal") f.sair();
-        else f.setSelecao(null);
-      } else if (evento.key === "Enter" && f.modo.tipo === "caminho") {
-        const indice = f.tracoAtual();
-        if (indice === null) return;
-        evento.preventDefault();
-        f.definirCaminho(indice);
-      }
-    }
-    window.addEventListener("keydown", aoTeclar);
-    return () => window.removeEventListener("keydown", aoTeclar);
-  }, [f]);
-}
-
-function useAtalhosHistorico(desfazer: () => void, refazer: () => void) {
-  useEffect(() => {
-    function aoTeclar(evento: KeyboardEvent) {
-      if (!(evento.ctrlKey || evento.metaKey) || evento.altKey) return;
-      if (campoDeTexto(evento.target)) return;
-      const tecla = evento.key.toLowerCase();
-      if (tecla === "z" && !evento.shiftKey) {
-        evento.preventDefault();
-        desfazer();
-      } else if ((tecla === "y" && !evento.shiftKey) || (tecla === "z" && evento.shiftKey)) {
-        evento.preventDefault();
-        refazer();
-      }
-    }
-    window.addEventListener("keydown", aoTeclar);
-    return () => window.removeEventListener("keydown", aoTeclar);
-  }, [desfazer, refazer]);
-}
-
 // Página do editor (plano fixo). Duas entradas:
 // - /editor/<mapa>: rascunho de tática nova, criada no banco só no primeiro salvamento;
 // - /taticas/<id>: tática salva, reaberta com o plano fixo.
@@ -124,12 +75,13 @@ export function Editor({ mapaId, taticaId }: { mapaId?: string; taticaId?: numbe
       return;
     }
     try {
-      const [jogadores, funcoes, tatica] = await Promise.all([
+      const [jogadores, funcoes, tatica, sequencias] = await Promise.all([
         listarJogadores(),
         listarFuncoes(),
         taticaId === undefined ? Promise.resolve(null) : obterTatica(taticaId),
+        taticaId === undefined ? Promise.resolve([]) : listarSequencias(taticaId),
       ]);
-      setCarga({ fase: "pronto", jogadores, funcoes, tatica });
+      setCarga({ fase: "pronto", jogadores, funcoes, tatica, sequencias });
     } catch (falha) {
       if (statusDoErro(falha) === 401 || statusDoErroTatica(falha) === 401) {
         navegar("/login", { substituir: true });
@@ -203,7 +155,13 @@ export function Editor({ mapaId, taticaId }: { mapaId?: string; taticaId?: numbe
       )}
 
       {usuario && carga.fase === "pronto" && mapa !== null && (
-        <AreaEditor mapa={mapa} jogadores={carga.jogadores} funcoes={carga.funcoes} tatica={carga.tatica} />
+        <AreaEditor
+          mapa={mapa}
+          jogadores={carga.jogadores}
+          funcoes={carga.funcoes}
+          tatica={carga.tatica}
+          sequencias={carga.sequencias}
+        />
       )}
     </main>
   );
@@ -214,10 +172,12 @@ type AreaEditorProps = {
   jogadores: Jogador[];
   funcoes: Funcao[];
   tatica: Tatica | null; // null = rascunho
+  sequencias: SequenciaApi[];
 };
 
-// Editor de tática, plano fixo: mapa ao centro e elenco à esquerda (seção 8).
-function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps) {
+// Editor de tática: mapa ao centro, elenco à esquerda, barra de utilitários no topo e linha
+// do tempo embaixo (seção 8).
+function AreaEditor({ mapa, jogadores: lista, funcoes, tatica, sequencias: sequenciasIniciais }: AreaEditorProps) {
   // Plano fixo: posições por jogador e sem jogador (RF08, RF08A), utilitários (RF10) e
   // traços (RF09). Toda alteração passa pelo histórico (RF16): cada `alterar` é uma ação.
   const historico = useHistorico<Plano>(
@@ -228,8 +188,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
         )
       : PLANO_VAZIO,
   );
-  const { estado: plano, alterar } = historico;
-  const posicoes = plano.jogadores;
+  const { estado: planoFixo, alterar: alterarPlano } = historico;
   const [aviso, setAviso] = useState<Aviso | null>(null);
   // Nome, lado e visibilidade vão ao banco, mas ficam fora do histórico (como na T4.3).
   const [nome, setNome] = useState(tatica?.nome ?? NOME_PADRAO);
@@ -239,7 +198,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
   const [rotacao, setRotacao] = useState<Rotacao>(0);
 
   // Salvamento em segundo plano (RNF01). O histórico não vai ao banco, só o estado atual.
-  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, ...planoParaApi(plano) };
+  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, ...planoParaApi(planoFixo) };
   const salvamento = useSalvamento({
     taticaId: tatica?.id ?? null,
     mapaId: mapa.id,
@@ -250,6 +209,20 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
     aoCriar: (id) => window.history.replaceState(null, "", `/taticas/${id}`),
   });
 
+  // Sequências e linha do tempo (RF13 a RF15): com uma sequência aberta, `plano` é o estado
+  // interpolado no instante atual e `alterar` vale para esse instante (editor/useLinhaDoTempo.ts).
+  const idsDoElenco = useMemo(() => new Set(lista.map((j) => j.id)), [lista]);
+  const tempo = useLinhaDoTempo({
+    planoFixo,
+    alterarPlano,
+    sequenciasIniciais,
+    idsDoElenco,
+    salvamento,
+  });
+  const { sequencias, marcacoes, reproducao, plano, alterar, estadoSalvamento, tentarDeNovo } = tempo;
+  const posicoes = plano.jogadores;
+  const { pausar, setInstante } = reproducao;
+
   // Utilitários e caminhos. O caminho é do jogador escolhido na barra; por padrão, o
   // primeiro do elenco que está no mapa.
   const jogadorPadrao = (lista.find((j) => plano.jogadores[j.id]) ?? lista[0])?.id ?? null;
@@ -259,17 +232,33 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
 
   // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai,
   // junto com a seleção e o menu das ferramentas.
+  // Com uma sequência aberta, o desfazer é o da sequência (cada uma tem o seu).
+  const aberta = sequencias.aberta !== null;
+  const { desfazer: desfazerSequencia, refazer: refazerSequencia } = sequencias;
   const desfazer = useCallback(() => {
     setAviso(null);
     limparFerramentas();
-    historico.desfazer();
-  }, [historico.desfazer, limparFerramentas]);
+    if (aberta) desfazerSequencia();
+    else historico.desfazer();
+  }, [aberta, desfazerSequencia, historico.desfazer, limparFerramentas]);
   const refazer = useCallback(() => {
     setAviso(null);
     limparFerramentas();
-    historico.refazer();
-  }, [historico.refazer, limparFerramentas]);
+    if (aberta) refazerSequencia();
+    else historico.refazer();
+  }, [aberta, refazerSequencia, historico.refazer, limparFerramentas]);
   useAtalhosHistorico(desfazer, refazer);
+  const podeDesfazer = aberta ? sequencias.podeDesfazer : historico.podeDesfazer;
+  const podeRefazer = aberta ? sequencias.podeRefazer : historico.podeRefazer;
+
+  // Trocar de sequência (ou voltar ao plano fixo) não é ação do histórico.
+  function trocarSequencia(id: number | null) {
+    pausar();
+    setInstante(0);
+    setAviso(null);
+    limparFerramentas();
+    sequencias.abrir(id);
+  }
 
   // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
   // É chamado só no fim do arraste (drop do elenco ou dragEnd no mapa): um arraste = uma ação.
@@ -454,7 +443,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
                 </Link>
               )}
             </div>
-            <IndicadorSalvamento estado={salvamento.estado} aoTentarDeNovo={salvamento.tentarDeNovo} />
+            <IndicadorSalvamento estado={estadoSalvamento} aoTentarDeNovo={tentarDeNovo} />
           </div>
           <div className="flex items-center justify-between gap-4">
             <label className="flex items-center gap-2 text-sm">
@@ -477,7 +466,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
                 <button
                   type="button"
                   onClick={desfazer}
-                  disabled={!historico.podeDesfazer}
+                  disabled={!podeDesfazer}
                   title="Desfazer (Ctrl+Z)"
                   className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
                 >
@@ -486,7 +475,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
                 <button
                   type="button"
                   onClick={refazer}
-                  disabled={!historico.podeRefazer}
+                  disabled={!podeRefazer}
                   title="Refazer (Ctrl+Y ou Ctrl+Shift+Z)"
                   className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
                 >
@@ -535,7 +524,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
             nomesFuncoes={nomesFuncoes}
             aoPosicionar={posicionar}
             aoMoverSemJogador={moverSemJogador}
-            interativo={ferramentas.modo.tipo === "normal"}
+            interativo={ferramentas.modo.tipo === "normal" && !reproducao.tocando}
             aoClicarFundo={() => {
               ferramentas.setSelecao(null);
               ferramentas.setMenu(null);
@@ -546,7 +535,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
                 utilitarios={plano.utilitarios}
                 tracos={plano.tracos}
                 selecao={ferramentas.selecao}
-                interativo={ferramentas.modo.tipo === "normal"}
+                interativo={ferramentas.modo.tipo === "normal" && !reproducao.tocando}
                 corTraco={COR_LADO[lado]}
                 nomeDoJogador={nomeDoJogador}
                 aoSelecionar={ferramentas.setSelecao}
@@ -585,7 +574,36 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
             }
           />
         </div>
+        <LinhaDoTempo
+          sequencias={sequencias}
+          marcacoes={marcacoes}
+          reproducao={reproducao}
+          fim={tempo.fim}
+          comprimento={tempo.comprimento}
+          aoTrocarSequencia={trocarSequencia}
+          aoAdicionarMarcacao={() => {
+            const instante = reproducao.instante;
+            sequencias.alterar((atuais) => adicionarMarcacao(atuais, instante));
+          }}
+          aoApagarMarcacao={() => {
+            const instante = reproducao.instante;
+            limparFerramentas();
+            sequencias.alterar((atuais) => apagarMarcacao(atuais, instante));
+          }}
+        />
       </section>
+      {salvamento.taticaId !== null &&
+        sequencias.info.map((info) => (
+          <GravadorSequencia
+            key={info.id}
+            taticaId={salvamento.taticaId!}
+            sequenciaId={info.id}
+            nome={info.nome}
+            marcacoes={sequencias.marcacoesDe(info.id)}
+            salvoEm={info.salvoEm}
+            aoMudarEstado={tempo.aoMudarGravacao}
+          />
+        ))}
     </div>
   );
 }

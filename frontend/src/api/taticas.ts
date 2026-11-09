@@ -14,6 +14,7 @@ export type PosicaoApi = {
 export type PontoApi = [number, number];
 
 export type UtilitarioApi = {
+  ref?: string; // só nas marcações de sequência
   tipo: "smoke" | "flash" | "molotov" | "he";
   x: number;
   y: number;

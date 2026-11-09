@@ -9,6 +9,8 @@ export type TipoUtilitario = "smoke" | "flash" | "molotov" | "he";
 export type StatusTraco = "rascunho" | "confirmado";
 
 export type Utilitario = Ponto & {
+  // Identidade entre as marcações de uma sequência (RF14). Vazia no plano fixo.
+  ref?: string;
   tipo: TipoUtilitario;
   // Linha de arremesso, do lançamento até antes do impacto (opcional). O desenho liga o
   // último ponto ao impacto, então mover o utilitário mantém a linha chegando nele.
@@ -47,6 +49,14 @@ export function criarUtilitario(tipo: TipoUtilitario, impacto: Ponto): Utilitari
 // Trocar o tipo volta a duração para a padrão do novo tipo.
 export function trocarTipo(utilitario: Utilitario, tipo: TipoUtilitario): Utilitario {
   return { ...utilitario, tipo, duracao: TIPOS_UTILITARIO[tipo].duracaoPadrao };
+}
+
+export const DURACAO_MAX = 120; // segundos, igual ao servidor
+
+export function ajustarDuracao(utilitario: Utilitario, segundos: number): Utilitario {
+  if (utilitario.duracao === null) return utilitario; // flash e HE não têm duração
+  const duracao = Math.min(DURACAO_MAX, Math.max(1, Math.round(segundos)));
+  return duracao === utilitario.duracao ? utilitario : { ...utilitario, duracao };
 }
 
 export function descreverDuracao(utilitario: Utilitario): string {
