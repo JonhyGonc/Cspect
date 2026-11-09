@@ -1,5 +1,5 @@
 import type Konva from "konva";
-import { useEffect, useRef, useState, type DragEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
 import { Circle, Group, Image as KonvaImage, Layer, Stage, Text } from "react-konva";
 import type { Jogador } from "../api/jogadores";
 import {
@@ -19,7 +19,7 @@ export const TIPO_ARRASTE_JOGADOR = "application/x-cspect-jogador";
 
 export type Lado = "T" | "CT";
 
-const COR_LADO: Record<Lado, string> = { T: "#E07B39", CT: "#4A90D9" };
+export const COR_LADO: Record<Lado, string> = { T: "#E07B39", CT: "#4A90D9" };
 const COR_FUNDO = "#14161A";
 const COR_TEXTO = "#E8EAED";
 const COR_DESTAQUE = "#F5A623";
@@ -67,6 +67,9 @@ function useTamanho(ref: RefObject<HTMLElement>): { largura: number; altura: num
   return tamanho;
 }
 
+// O que as camadas extras (traços e utilitários) precisam para converter coordenadas.
+export type ContextoMapa = { quadro: Enquadramento; rotacao: Rotacao };
+
 type Props = {
   mapa: Mapa;
   rotacao: Rotacao;
@@ -79,6 +82,14 @@ type Props = {
   nomesFuncoes: Record<number, string>;
   aoPosicionar: (jogadorId: number, ponto: Ponto) => void;
   aoMoverSemJogador: (indice: number, ponto: Ponto) => void;
+  // false nos modos de colocar ou desenhar: os jogadores não respondem ao mouse.
+  interativo?: boolean;
+  // Camadas extras: abaixo dos jogadores (traços e utilitários) e acima (captura do desenho).
+  camadasAbaixo?: (contexto: ContextoMapa) => ReactNode;
+  camadasAcima?: (contexto: ContextoMapa) => ReactNode;
+  // HTML por cima do mapa (ex.: menu do botão direito), em px da área do mapa.
+  sobreposicao?: ReactNode;
+  aoClicarFundo?: () => void;
 };
 
 // Mapa do editor com Konva (seção 10): imagem de fundo na proporção original, girada
@@ -93,6 +104,11 @@ export function MapaEditor({
   nomesFuncoes,
   aoPosicionar,
   aoMoverSemJogador,
+  interativo = true,
+  camadasAbaixo,
+  camadasAcima,
+  sobreposicao,
+  aoClicarFundo,
 }: Props) {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -139,7 +155,15 @@ export function MapaEditor({
         </p>
       )}
       {quadro && imagem.fase === "pronto" && (
-        <Stage ref={stageRef} width={largura} height={altura}>
+        <Stage
+          ref={stageRef}
+          width={largura}
+          height={altura}
+          onMouseDown={(e) => {
+            if (e.target === e.target.getStage()) aoClicarFundo?.();
+          }}
+          onContextMenu={(e) => e.evt.preventDefault()}
+        >
           <Layer listening={false}>
             {/* A imagem gira em torno do próprio centro; o centro do quadro não muda com a rotação. */}
             <KonvaImage
@@ -153,7 +177,8 @@ export function MapaEditor({
               rotation={rotacao}
             />
           </Layer>
-          <Layer>
+          {camadasAbaixo?.({ quadro, rotacao })}
+          <Layer listening={interativo}>
             {jogadores.map((jogador) => {
               const ponto = posicoes[jogador.id];
               if (!ponto) return null;
@@ -189,8 +214,10 @@ export function MapaEditor({
               />
             ))}
           </Layer>
+          {camadasAcima?.({ quadro, rotacao })}
         </Stage>
       )}
+      {quadro && sobreposicao}
     </div>
   );
 }

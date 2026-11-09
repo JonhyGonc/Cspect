@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   listarFuncoes,
   listarJogadores,
@@ -15,16 +15,20 @@ import {
   type Tatica,
   type Visibilidade,
 } from "../api/taticas";
-import { Avatar } from "../componentes/Avatar";
+import { BarraUtilitarios } from "../componentes/BarraUtilitarios";
 import { Cabecalho } from "../componentes/Cabecalho";
-import { MapaEditor, TIPO_ARRASTE_JOGADOR, type Lado } from "../componentes/MapaEditor";
+import { CamadaCaptura, CamadaPlano, MenuCaminho } from "../componentes/CamadaDesenho";
+import { IndicadorSalvamento } from "../componentes/IndicadorSalvamento";
+import { ItemElenco, ItemSemJogador } from "../componentes/ItensElenco";
+import { COR_LADO, MapaEditor, type Lado } from "../componentes/MapaEditor";
 import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
 import { mapaPorId, type Mapa } from "../editor/mapas";
 import { PLANO_VAZIO, planoDaApi, planoParaApi, type Plano } from "../editor/plano";
 import { funcoesRepetidas, sugerirFuncoes, type Posicao } from "../editor/sugestao";
+import { useFerramentas, type Ferramentas } from "../editor/useFerramentas";
 import { useHistorico } from "../editor/useHistorico";
-import { useSalvamento, type EstadoSalvamento } from "../editor/useSalvamento";
+import { useSalvamento } from "../editor/useSalvamento";
 import { Link, navegar } from "../roteamento";
 
 type Carga =
@@ -51,17 +55,45 @@ function useLarguraJanela(): number {
 
 // Atalhos de desfazer e refazer (RF16): Ctrl+Z desfaz; Ctrl+Y ou Ctrl+Shift+Z refaz
 // (Cmd no macOS). Em campo de texto ou select, o atalho fica com o navegador.
+function campoDeTexto(alvo: EventTarget | null): boolean {
+  return (
+    alvo instanceof HTMLElement &&
+    (alvo.isContentEditable || alvo.closest("input, textarea, select, [contenteditable]") !== null)
+  );
+}
+
+// Atalhos das ferramentas (fora de campos de texto e select):
+// Delete ou Backspace apaga o item selecionado; Esc fecha o menu, sai do modo ou tira a
+// seleção; Enter, no modo de caminho, grava o rascunho com "definir caminho" (RF09).
+function useAtalhosFerramentas(f: Ferramentas) {
+  useEffect(() => {
+    function aoTeclar(evento: KeyboardEvent) {
+      if (evento.ctrlKey || evento.metaKey || evento.altKey || campoDeTexto(evento.target)) return;
+      if (evento.key === "Delete" || evento.key === "Backspace") {
+        if (!f.selecao) return;
+        evento.preventDefault();
+        f.apagar();
+      } else if (evento.key === "Escape") {
+        if (f.menu) f.setMenu(null);
+        else if (f.modo.tipo !== "normal") f.sair();
+        else f.setSelecao(null);
+      } else if (evento.key === "Enter" && f.modo.tipo === "caminho") {
+        const indice = f.tracoAtual();
+        if (indice === null) return;
+        evento.preventDefault();
+        f.definirCaminho(indice);
+      }
+    }
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [f]);
+}
+
 function useAtalhosHistorico(desfazer: () => void, refazer: () => void) {
   useEffect(() => {
     function aoTeclar(evento: KeyboardEvent) {
       if (!(evento.ctrlKey || evento.metaKey) || evento.altKey) return;
-      const alvo = evento.target;
-      if (
-        alvo instanceof HTMLElement &&
-        (alvo.isContentEditable || alvo.closest("input, textarea, select, [contenteditable]") !== null)
-      ) {
-        return;
-      }
+      if (campoDeTexto(evento.target)) return;
       const tecla = evento.key.toLowerCase();
       if (tecla === "z" && !evento.shiftKey) {
         evento.preventDefault();
@@ -74,10 +106,6 @@ function useAtalhosHistorico(desfazer: () => void, refazer: () => void) {
     window.addEventListener("keydown", aoTeclar);
     return () => window.removeEventListener("keydown", aoTeclar);
   }, [desfazer, refazer]);
-}
-
-function formatar(valor: number): string {
-  return valor.toFixed(4);
 }
 
 // Página do editor (plano fixo). Duas entradas:
@@ -190,10 +218,15 @@ type AreaEditorProps = {
 
 // Editor de tática, plano fixo: mapa ao centro e elenco à esquerda (seção 8).
 function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps) {
-  // Plano fixo: posições por jogador e posições sem jogador (RF08, RF08A). Toda alteração
-  // passa pelo histórico (RF16): cada chamada de `alterar` é uma ação.
+  // Plano fixo: posições por jogador e sem jogador (RF08, RF08A), utilitários (RF10) e
+  // traços (RF09). Toda alteração passa pelo histórico (RF16): cada `alterar` é uma ação.
   const historico = useHistorico<Plano>(
-    tatica ? planoDaApi(tatica.posicoes, new Set(lista.map((j) => j.id))) : PLANO_VAZIO,
+    tatica
+      ? planoDaApi(
+          { posicoes: tatica.posicoes, utilitarios: tatica.utilitarios ?? [], tracos: tatica.tracos ?? [] },
+          new Set(lista.map((j) => j.id)),
+        )
+      : PLANO_VAZIO,
   );
   const { estado: plano, alterar } = historico;
   const posicoes = plano.jogadores;
@@ -206,7 +239,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
   const [rotacao, setRotacao] = useState<Rotacao>(0);
 
   // Salvamento em segundo plano (RNF01). O histórico não vai ao banco, só o estado atual.
-  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, posicoes: planoParaApi(plano) };
+  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, ...planoParaApi(plano) };
   const salvamento = useSalvamento({
     taticaId: tatica?.id ?? null,
     mapaId: mapa.id,
@@ -217,15 +250,25 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
     aoCriar: (id) => window.history.replaceState(null, "", `/taticas/${id}`),
   });
 
-  // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai.
+  // Utilitários e caminhos. O caminho é do jogador escolhido na barra; por padrão, o
+  // primeiro do elenco que está no mapa.
+  const jogadorPadrao = (lista.find((j) => plano.jogadores[j.id]) ?? lista[0])?.id ?? null;
+  const ferramentas = useFerramentas({ plano, alterar, jogadorPadrao });
+  useAtalhosFerramentas(ferramentas);
+  const { limpar: limparFerramentas } = ferramentas;
+
+  // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai,
+  // junto com a seleção e o menu das ferramentas.
   const desfazer = useCallback(() => {
     setAviso(null);
+    limparFerramentas();
     historico.desfazer();
-  }, [historico.desfazer]);
+  }, [historico.desfazer, limparFerramentas]);
   const refazer = useCallback(() => {
     setAviso(null);
+    limparFerramentas();
     historico.refazer();
-  }, [historico.refazer]);
+  }, [historico.refazer, limparFerramentas]);
   useAtalhosHistorico(desfazer, refazer);
 
   // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
@@ -296,6 +339,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
 
   const nomesFuncoes = Object.fromEntries(funcoes.map((f) => [f.id, f.nome])) as Record<number, string>;
   const nickPorId = Object.fromEntries(lista.map((j) => [j.id, j.nickname])) as Record<number, string>;
+  const nomeDoJogador = (id: number | null) => (id !== null && nickPorId[id]) || "Sem jogador";
   // Posições sem jogador também contam para o aviso de função repetida (chaves negativas).
   const repetidas = funcoesRepetidas({
     ...posicoes,
@@ -479,6 +523,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
             </div>
           </div>
         </div>
+        <BarraUtilitarios ferramentas={ferramentas} plano={plano} jogadores={lista} nomeDoJogador={nomeDoJogador} />
         <div className="min-h-0 flex-1 p-2">
           <MapaEditor
             mapa={mapa}
@@ -490,191 +535,57 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps
             nomesFuncoes={nomesFuncoes}
             aoPosicionar={posicionar}
             aoMoverSemJogador={moverSemJogador}
+            interativo={ferramentas.modo.tipo === "normal"}
+            aoClicarFundo={() => {
+              ferramentas.setSelecao(null);
+              ferramentas.setMenu(null);
+            }}
+            camadasAbaixo={(contexto) => (
+              <CamadaPlano
+                contexto={contexto}
+                utilitarios={plano.utilitarios}
+                tracos={plano.tracos}
+                selecao={ferramentas.selecao}
+                interativo={ferramentas.modo.tipo === "normal"}
+                corTraco={COR_LADO[lado]}
+                nomeDoJogador={nomeDoJogador}
+                aoSelecionar={ferramentas.setSelecao}
+                aoMoverUtilitario={ferramentas.moverUtilitario}
+                aoMenuTraco={ferramentas.abrirMenu}
+              />
+            )}
+            camadasAcima={(contexto) =>
+              ferramentas.modo.tipo !== "normal" ? (
+                <CamadaCaptura
+                  contexto={contexto}
+                  modo={ferramentas.modo}
+                  cor={COR_LADO[lado]}
+                  aoColocar={ferramentas.colocar}
+                  aoFinalizarDesenho={(pontos) => {
+                    const modo = ferramentas.modo;
+                    if (modo.tipo === "caminho") ferramentas.finalizarTraco(pontos);
+                    else if (modo.tipo === "trajetoria") ferramentas.definirTrajetoria(modo.indice, pontos);
+                  }}
+                  aoMenuFundo={(tela) => {
+                    if (ferramentas.modo.tipo === "caminho") ferramentas.abrirMenu(ferramentas.tracoAtual(), tela);
+                  }}
+                />
+              ) : null
+            }
+            sobreposicao={
+              ferramentas.menu && plano.tracos[ferramentas.menu.indice] ? (
+                <MenuCaminho
+                  tela={ferramentas.menu.tela}
+                  traco={plano.tracos[ferramentas.menu.indice]}
+                  aoDefinir={() => ferramentas.definirCaminho(ferramentas.menu!.indice)}
+                  aoApagar={() => ferramentas.apagar({ tipo: "traco", indice: ferramentas.menu!.indice })}
+                  aoFechar={() => ferramentas.setMenu(null)}
+                />
+              ) : null
+            }
           />
         </div>
       </section>
     </div>
-  );
-}
-
-function horaCurta(data: Date): string {
-  return data.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-}
-
-// Indicador discreto do salvamento (RNF01).
-function IndicadorSalvamento({ estado, aoTentarDeNovo }: { estado: EstadoSalvamento; aoTentarDeNovo: () => void }) {
-  return (
-    <div
-      role="status"
-      data-testid="salvamento"
-      data-fase={estado.fase}
-      className="flex shrink-0 items-center gap-2 text-sm"
-    >
-      {estado.fase === "rascunho" && <span className="opacity-60">Rascunho: salva na primeira alteração</span>}
-      {estado.fase === "pendente" && <span className="opacity-60">Alterações não salvas</span>}
-      {estado.fase === "salvando" && <span className="opacity-70">Salvando...</span>}
-      {estado.fase === "salvo" && <span className="opacity-60">Salvo às {horaCurta(estado.em)}</span>}
-      {estado.fase === "invalido" && <span className="text-destaque">{estado.mensagem}</span>}
-      {estado.fase === "erro" && (
-        <>
-          <span className="text-red-400" title={estado.mensagem}>
-            Não foi possível salvar
-          </span>
-          <button
-            type="button"
-            onClick={aoTentarDeNovo}
-            className="rounded-md border border-white/10 px-2 py-1 text-xs font-semibold transition hover:border-destaque"
-          >
-            Tentar de novo
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-function SeletorFuncao({
-  rotulo,
-  posicao,
-  funcoes,
-  repetida,
-  aoTrocarFuncao,
-}: {
-  rotulo: string;
-  posicao: Posicao;
-  funcoes: Funcao[];
-  repetida: boolean;
-  aoTrocarFuncao: (funcaoId: number | null) => void;
-}) {
-  return (
-    <label className="flex flex-col gap-1 text-xs">
-      <span className="opacity-60">Função nesta tática</span>
-      <select
-        value={posicao.funcaoId ?? ""}
-        onChange={(e) => aoTrocarFuncao(e.target.value === "" ? null : Number(e.target.value))}
-        aria-label={rotulo}
-        className={
-          "rounded-md border bg-painel px-2 py-1 text-sm " +
-          (posicao.funcaoId === null ? "border-white/10 opacity-70" : "border-destaque/60 text-destaque")
-        }
-      >
-        <option value="">Sem função</option>
-        {funcoes.map((funcao) => (
-          <option key={funcao.id} value={funcao.id}>
-            {funcao.nome}
-          </option>
-        ))}
-      </select>
-      {repetida && <span className="text-destaque">Outro jogador no mapa está com esta função.</span>}
-    </label>
-  );
-}
-
-type ItemElencoProps = {
-  jogador: Jogador;
-  posicao: Posicao | null;
-  funcoes: Funcao[];
-  repetida: boolean;
-  aoTrocarFuncao: (funcaoId: number | null) => void;
-  aoTirar: () => void;
-};
-
-function ItemElenco({ jogador, posicao, funcoes, repetida, aoTrocarFuncao, aoTirar }: ItemElencoProps) {
-  function aoComecarArraste(evento: DragEvent<HTMLLIElement>) {
-    evento.dataTransfer.setData(TIPO_ARRASTE_JOGADOR, String(jogador.id));
-    evento.dataTransfer.effectAllowed = "move";
-  }
-
-  return (
-    <li
-      draggable
-      onDragStart={aoComecarArraste}
-      aria-label={jogador.nickname}
-      data-jogador-id={jogador.id}
-      data-x={posicao ? formatar(posicao.x) : undefined}
-      data-y={posicao ? formatar(posicao.y) : undefined}
-      data-funcao-id={posicao?.funcaoId ?? undefined}
-      className="flex cursor-grab flex-col gap-2 rounded-md border border-white/5 bg-fundo p-2 active:cursor-grabbing"
-    >
-      <div className="flex items-center gap-3">
-        <Avatar iniciais={jogador.avatar} />
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-bold" title={jogador.nickname}>
-            {jogador.nickname}
-          </p>
-          <p className="truncate text-xs opacity-60" title={`Função principal: ${jogador.funcao_principal.nome}`}>
-            Principal: {jogador.funcao_principal.nome}
-          </p>
-        </div>
-        {posicao && (
-          <button
-            type="button"
-            onClick={aoTirar}
-            aria-label={`Tirar ${jogador.nickname} do mapa`}
-            title="Tirar do mapa"
-            className="shrink-0 rounded px-1.5 text-sm opacity-60 transition hover:text-red-400 hover:opacity-100"
-          >
-            ✕
-          </button>
-        )}
-      </div>
-      {posicao && (
-        <SeletorFuncao
-          rotulo={`Função de ${jogador.nickname} nesta tática`}
-          posicao={posicao}
-          funcoes={funcoes}
-          repetida={repetida}
-          aoTrocarFuncao={aoTrocarFuncao}
-        />
-      )}
-    </li>
-  );
-}
-
-type ItemSemJogadorProps = {
-  numero: number;
-  posicao: Posicao;
-  funcoes: Funcao[];
-  repetida: boolean;
-  aoTrocarFuncao: (funcaoId: number | null) => void;
-  aoTirar: () => void;
-};
-
-// Posição cujo jogador foi removido do elenco (RF08A): mantém a função, sem jogador.
-function ItemSemJogador({ numero, posicao, funcoes, repetida, aoTrocarFuncao, aoTirar }: ItemSemJogadorProps) {
-  const rotulo = `Posição sem jogador ${numero}`;
-  return (
-    <li
-      aria-label={rotulo}
-      data-sem-jogador={numero}
-      data-x={formatar(posicao.x)}
-      data-y={formatar(posicao.y)}
-      data-funcao-id={posicao.funcaoId ?? undefined}
-      className="flex flex-col gap-2 rounded-md border border-dashed border-white/15 bg-fundo p-2"
-    >
-      <div className="flex items-center gap-3">
-        <Avatar iniciais="?" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-bold opacity-80">Sem jogador</p>
-          <p className="truncate text-xs opacity-60">O jogador foi removido do elenco.</p>
-        </div>
-        <button
-          type="button"
-          onClick={aoTirar}
-          aria-label={`Tirar ${rotulo.toLowerCase()} do mapa`}
-          title="Tirar do mapa"
-          className="shrink-0 rounded px-1.5 text-sm opacity-60 transition hover:text-red-400 hover:opacity-100"
-        >
-          ✕
-        </button>
-      </div>
-      <SeletorFuncao
-        rotulo={`Função da ${rotulo.toLowerCase()}`}
-        posicao={posicao}
-        funcoes={funcoes}
-        repetida={repetida}
-        aoTrocarFuncao={aoTrocarFuncao}
-      />
-    </li>
   );
 }

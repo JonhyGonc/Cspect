@@ -162,6 +162,59 @@ class PosicaoQuadro(BaseModel):
     y: Coordenada
 
 
+# --- Utilitários e traços no quadro (fase 5: RF09, RF10, RF11) -------------
+
+UTILITARIOS_MAX = 30  # por tática
+TRACOS_MAX = 30  # por tática
+PONTOS_TRACO_MAX = 200
+PONTOS_TRAJETORIA_MAX = 50
+DURACAO_MAX = 120  # segundos: folga sobre a duração real de smoke e molotov
+# Duração padrão por tipo, em segundos (RF11). Smoke: valor a confirmar no jogo, as fontes
+# divergem entre 18 e 20 (Anexo B). Flash e HE são um momento, sem duração.
+DURACAO_PADRAO = {"smoke": 18, "molotov": 7}
+
+TipoUtilitario = Literal["smoke", "flash", "molotov", "he"]
+StatusTraco = Literal["rascunho", "confirmado"]
+# Ponto normalizado [x, y], na orientação original do PNG.
+Ponto = tuple[Coordenada, Coordenada]
+
+
+class UtilitarioQuadro(BaseModel):
+    """Utilitário no quadro (RF10): tipo, impacto, trajetória opcional e duração (RF11).
+
+    A trajetória é a linha de arremesso, do ponto de lançamento até antes do impacto; o
+    desenho liga o último ponto dela ao impacto. Sem duração informada, smoke e molotov
+    recebem a padrão; flash e HE não têm duração.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: TipoUtilitario
+    x: Coordenada
+    y: Coordenada
+    trajetoria: list[Ponto] | None = Field(default=None, min_length=1, max_length=PONTOS_TRAJETORIA_MAX)
+    duracao: Annotated[int, Field(strict=True, ge=1, le=DURACAO_MAX)] | None = None
+
+    @model_validator(mode="after")
+    def duracao_por_tipo(self) -> "UtilitarioQuadro":
+        if self.tipo in DURACAO_PADRAO:
+            if self.duracao is None:
+                self.duracao = DURACAO_PADRAO[self.tipo]
+        elif self.duracao is not None:
+            raise ValueError("Flash e HE não têm duração.")
+        return self
+
+
+class Traco(BaseModel):
+    """Traço de caminho (RF09): jogador (nulo se removido do elenco, RF08A), pontos e status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jogador_id: IdJogadorNaTatica | None = None
+    pontos: list[Ponto] = Field(min_length=2, max_length=PONTOS_TRACO_MAX)
+    status: StatusTraco = "rascunho"
+
+
 class _DadosTatica(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -169,6 +222,9 @@ class _DadosTatica(BaseModel):
     lado: Lado
     visibilidade: Visibilidade = "privada"
     posicoes: list[PosicaoQuadro] = Field(max_length=POSICOES_MAX)
+    # Opcionais com padrão vazio: o contrato da T4.4 continua valendo.
+    utilitarios: list[UtilitarioQuadro] = Field(default_factory=list, max_length=UTILITARIOS_MAX)
+    tracos: list[Traco] = Field(default_factory=list, max_length=TRACOS_MAX)
 
     @field_validator("nome")
     @classmethod
@@ -209,3 +265,5 @@ class TaticaResumo(BaseModel):
 class Tatica(TaticaResumo):
     criada_em: datetime
     posicoes: list[PosicaoQuadro]
+    utilitarios: list[UtilitarioQuadro]
+    tracos: list[Traco]

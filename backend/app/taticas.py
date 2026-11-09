@@ -3,10 +3,11 @@
 Toda consulta de tática filtra pelo autor (usuario_id). Uma tática de outro usuário é
 tratada como inexistente (404), para não revelar que ela existe.
 O plano fixo é o quadro da tática sem sequência; gravar o plano substitui todas as
-posições desse quadro, numa única transação.
+posições, utilitários e traços desse quadro, numa única transação.
 """
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from app.config import get_settings
 
@@ -73,6 +74,33 @@ def _buscar(cursor, usuario_id: int, tatica_id: int) -> dict:
     tatica["posicoes"] = [
         {"jogador_id": jogador_id, "funcao_id": funcao_id, "x": x, "y": y} for jogador_id, funcao_id, x, y in posicoes
     ]
+    utilitarios = cursor.execute(
+        """
+        SELECT u.tipo, u.x, u.y, u.trajetoria, u.duracao
+        FROM utilitarios_quadro u
+        JOIN quadros q ON q.id = u.quadro_id
+        WHERE q.tatica_id = %s AND q.sequencia_id IS NULL
+        ORDER BY u.id
+        """,
+        (tatica_id,),
+    ).fetchall()
+    tatica["utilitarios"] = [
+        {"tipo": tipo, "x": x, "y": y, "trajetoria": trajetoria, "duracao": duracao}
+        for tipo, x, y, trajetoria, duracao in utilitarios
+    ]
+    tracos = cursor.execute(
+        """
+        SELECT t.jogador_id, t.pontos, t.status
+        FROM tracos t
+        JOIN quadros q ON q.id = t.quadro_id
+        WHERE q.tatica_id = %s AND q.sequencia_id IS NULL
+        ORDER BY t.id
+        """,
+        (tatica_id,),
+    ).fetchall()
+    tatica["tracos"] = [
+        {"jogador_id": jogador_id, "pontos": pontos, "status": status} for jogador_id, pontos, status in tracos
+    ]
     return tatica
 
 
@@ -82,8 +110,9 @@ def buscar_tatica(usuario_id: int, tatica_id: int) -> dict:
             return _buscar(cursor, usuario_id, tatica_id)
 
 
-def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict]) -> None:
-    """Funções precisam existir e jogadores precisam ser do próprio usuário (RNF03)."""
+def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict], tracos: list[dict]) -> None:
+    """Funções precisam existir e jogadores (das posições e dos traços) precisam ser do
+    próprio usuário (RNF03)."""
     funcoes = {p["funcao_id"] for p in posicoes if p["funcao_id"] is not None}
     if funcoes:
         encontradas = cursor.execute(
@@ -91,7 +120,7 @@ def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict]) -> None:
         ).fetchone()[0]
         if encontradas != len(funcoes):
             raise FuncaoInexistente
-    jogadores = {p["jogador_id"] for p in posicoes if p["jogador_id"] is not None}
+    jogadores = {p["jogador_id"] for p in [*posicoes, *tracos] if p["jogador_id"] is not None}
     if jogadores:
         # FOR SHARE: o jogador não pode ser removido no meio desta gravação.
         encontrados = cursor.execute(
@@ -102,7 +131,8 @@ def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict]) -> None:
             raise JogadorInvalido
 
 
-def _gravar_plano(cursor, tatica_id: int, posicoes: list[dict]) -> None:
+def _gravar_plano(cursor, tatica_id: int, posicoes: list[dict], utilitarios: list[dict], tracos: list[dict]) -> None:
+    """Substitui posições, utilitários e traços do plano fixo."""
     quadro = cursor.execute(
         "SELECT id FROM quadros WHERE tatica_id = %s AND sequencia_id IS NULL", (tatica_id,)
     ).fetchone()
@@ -113,10 +143,32 @@ def _gravar_plano(cursor, tatica_id: int, posicoes: list[dict]) -> None:
     else:
         quadro_id = quadro[0]
         cursor.execute("DELETE FROM posicoes_quadro WHERE quadro_id = %s", (quadro_id,))
+        cursor.execute("DELETE FROM utilitarios_quadro WHERE quadro_id = %s", (quadro_id,))
+        cursor.execute("DELETE FROM tracos WHERE quadro_id = %s", (quadro_id,))
     if posicoes:
         cursor.executemany(
             "INSERT INTO posicoes_quadro (quadro_id, jogador_id, funcao_id, x, y) VALUES (%s, %s, %s, %s, %s)",
             [(quadro_id, p["jogador_id"], p["funcao_id"], p["x"], p["y"]) for p in posicoes],
+        )
+    if utilitarios:
+        cursor.executemany(
+            "INSERT INTO utilitarios_quadro (quadro_id, tipo, x, y, trajetoria, duracao) VALUES (%s, %s, %s, %s, %s, %s)",
+            [
+                (
+                    quadro_id,
+                    u["tipo"],
+                    u["x"],
+                    u["y"],
+                    None if u["trajetoria"] is None else Jsonb([list(p) for p in u["trajetoria"]]),
+                    u["duracao"],
+                )
+                for u in utilitarios
+            ],
+        )
+    if tracos:
+        cursor.executemany(
+            "INSERT INTO tracos (quadro_id, jogador_id, pontos, status) VALUES (%s, %s, %s, %s)",
+            [(quadro_id, t["jogador_id"], Jsonb([list(p) for p in t["pontos"]]), t["status"]) for t in tracos],
         )
 
 
@@ -128,11 +180,13 @@ def criar_tatica(
     lado: str,
     visibilidade: str,
     posicoes: list[dict],
+    utilitarios: list[dict],
+    tracos: list[dict],
 ) -> dict:
     """Cria a tática com o plano fixo numa única transação."""
     with _conectar() as conexao:
         with conexao.cursor() as cursor:
-            _conferir_posicoes(cursor, usuario_id, posicoes)
+            _conferir_posicoes(cursor, usuario_id, posicoes, tracos)
             tatica_id = cursor.execute(
                 """
                 INSERT INTO taticas (usuario_id, mapa_id, nome, lado, visibilidade)
@@ -141,7 +195,7 @@ def criar_tatica(
                 """,
                 (usuario_id, mapa_id, nome, lado, visibilidade),
             ).fetchone()[0]
-            _gravar_plano(cursor, tatica_id, posicoes)
+            _gravar_plano(cursor, tatica_id, posicoes, utilitarios, tracos)
             return _buscar(cursor, usuario_id, tatica_id)
 
 
@@ -153,6 +207,8 @@ def atualizar_tatica(
     lado: str,
     visibilidade: str,
     posicoes: list[dict],
+    utilitarios: list[dict],
+    tracos: list[dict],
 ) -> dict:
     """Substitui nome, lado, visibilidade e o plano fixo. O mapa não muda."""
     with _conectar() as conexao:
@@ -164,7 +220,7 @@ def atualizar_tatica(
             ).fetchone()
             if existe is None:
                 raise TaticaNaoEncontrada
-            _conferir_posicoes(cursor, usuario_id, posicoes)
+            _conferir_posicoes(cursor, usuario_id, posicoes, tracos)
             cursor.execute(
                 """
                 UPDATE taticas
@@ -173,7 +229,7 @@ def atualizar_tatica(
                 """,
                 (nome, lado, visibilidade, tatica_id, usuario_id),
             )
-            _gravar_plano(cursor, tatica_id, posicoes)
+            _gravar_plano(cursor, tatica_id, posicoes, utilitarios, tracos)
             return _buscar(cursor, usuario_id, tatica_id)
 
 

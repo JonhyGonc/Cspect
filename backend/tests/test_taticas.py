@@ -115,3 +115,54 @@ def test_remover_jogador_mantem_posicao_com_funcao(logado):
 
     reaberta = logado.get(f"{ENDPOINT}/{tatica_id}").json()
     assert reaberta["posicoes"] == [{"jogador_id": None, "funcao_id": AWPER, "x": 0.3, "y": 0.4}]
+
+
+# --- Fase 5: utilitários e traços -------------------------------------------
+
+UTILITARIOS = [
+    {"tipo": "smoke", "x": 0.5, "y": 0.5, "trajetoria": [[0.1, 0.9], [0.3, 0.7]], "duracao": 18},
+    {"tipo": "flash", "x": 0.2, "y": 0.3, "trajetoria": None, "duracao": None},
+]
+
+
+def test_utilitarios_e_tracos_salvam_reabrem_e_sao_so_do_dono(logado, outro):
+    jogador = _criar(logado, nickname="alfa").json()
+    tracos = [
+        {"jogador_id": jogador["id"], "pontos": [[0.1, 0.1], [0.2, 0.25], [0.3, 0.4]], "status": "confirmado"},
+        {"jogador_id": jogador["id"], "pontos": [[0.5, 0.5], [0.6, 0.6]], "status": "rascunho"},
+    ]
+    tatica_id = logado.post(ENDPOINT, json=_tatica(utilitarios=UTILITARIOS, tracos=tracos)).json()["id"]
+
+    reaberta = logado.get(f"{ENDPOINT}/{tatica_id}").json()
+    assert reaberta["utilitarios"] == UTILITARIOS
+    assert reaberta["tracos"] == tracos
+
+    assert outro.get(f"{ENDPOINT}/{tatica_id}").status_code == 404
+    assert outro.put(f"{ENDPOINT}/{tatica_id}", json=_atualizacao(utilitarios=[], tracos=[])).status_code == 404
+    assert logado.get(f"{ENDPOINT}/{tatica_id}").json()["tracos"] == tracos
+
+
+@pytest.mark.parametrize(
+    "alteracoes",
+    [
+        {"utilitarios": [{"tipo": "decoy", "x": 0.5, "y": 0.5}]},
+        {"utilitarios": [{"tipo": "he", "x": 1.2, "y": 0.5}]},
+        {"utilitarios": [{"tipo": "he", "x": 0.5, "y": 0.5, "trajetoria": [[0.5, -0.1]]}]},
+        {"tracos": [{"pontos": [[0.1, 0.1], [0.2, 1.5]], "status": "rascunho"}]},
+        {"tracos": [{"pontos": [[0.1, 0.1], [0.2, 0.2]], "status": "pronto"}]},
+    ],
+)
+def test_validacao_de_utilitarios_e_tracos_responde_422(logado, alteracoes):
+    assert logado.post(ENDPOINT, json=_tatica(**alteracoes)).status_code == 422
+
+
+def test_remover_jogador_mantem_traco_sem_jogador(logado):
+    """RF08A também no traço: o caminho fica na tática, sem jogador."""
+    jogador = _criar(logado, nickname="alfa").json()
+    tracos = [{"jogador_id": jogador["id"], "pontos": [[0.1, 0.1], [0.2, 0.2]], "status": "confirmado"}]
+    tatica_id = logado.post(ENDPOINT, json=_tatica(tracos=tracos)).json()["id"]
+
+    assert logado.delete(f"/api/jogadores/{jogador['id']}").status_code == 204
+
+    reaberta = logado.get(f"{ENDPOINT}/{tatica_id}").json()
+    assert reaberta["tracos"] == [{**tracos[0], "jogador_id": None}]
