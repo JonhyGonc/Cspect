@@ -7,24 +7,37 @@ import {
   type Funcao,
   type Jogador,
 } from "../api/jogadores";
+import {
+  mensagemDoErroTatica,
+  obterTatica,
+  statusDoErroTatica,
+  type DadosTatica,
+  type Tatica,
+  type Visibilidade,
+} from "../api/taticas";
 import { Avatar } from "../componentes/Avatar";
 import { Cabecalho } from "../componentes/Cabecalho";
 import { MapaEditor, TIPO_ARRASTE_JOGADOR, type Lado } from "../componentes/MapaEditor";
 import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
-import { mapaPorId } from "../editor/mapas";
+import { mapaPorId, type Mapa } from "../editor/mapas";
+import { PLANO_VAZIO, planoDaApi, planoParaApi, type Plano } from "../editor/plano";
 import { funcoesRepetidas, sugerirFuncoes, type Posicao } from "../editor/sugestao";
 import { useHistorico } from "../editor/useHistorico";
+import { useSalvamento, type EstadoSalvamento } from "../editor/useSalvamento";
 import { Link, navegar } from "../roteamento";
 
-type CargaElenco =
+type Carga =
   | { fase: "carregando" }
-  | { fase: "pronto"; dados: { jogadores: Jogador[]; funcoes: Funcao[] } }
+  | { fase: "pronto"; jogadores: Jogador[]; funcoes: Funcao[]; tatica: Tatica | null }
+  | { fase: "nao-encontrada" }
   | { fase: "erro"; mensagem: string };
 
 type Aviso = { tipo: "sucesso" | "atencao"; linhas: string[] };
 
 const LARGURA_MINIMA = 1280; // RNF10
+const NOME_PADRAO = "Nova tática";
+const NOME_MAX = 60;
 
 function useLarguraJanela(): number {
   const [largura, setLargura] = useState(() => window.innerWidth);
@@ -67,106 +80,49 @@ function formatar(valor: number): string {
   return valor.toFixed(4);
 }
 
-// Editor de tática, plano fixo (T4.1): mapa ao centro e elenco à esquerda (seção 8).
-// As posições ficam só no estado da tela nesta etapa; o salvamento vem depois (RNF01).
-export function Editor({ mapaId }: { mapaId: string }) {
+// Página do editor (plano fixo). Duas entradas:
+// - /editor/<mapa>: rascunho de tática nova, criada no banco só no primeiro salvamento;
+// - /taticas/<id>: tática salva, reaberta com o plano fixo.
+// Carrega a sessão, o elenco, as funções e, se for o caso, a tática; depois monta o editor.
+export function Editor({ mapaId, taticaId }: { mapaId?: string; taticaId?: number }) {
   const sessao = useSessao();
-  const mapa = mapaPorId(mapaId);
   const larguraJanela = useLarguraJanela();
+  const [carga, setCarga] = useState<Carga>({ fase: "carregando" });
 
-  const [elenco, setElenco] = useState<CargaElenco>({ fase: "carregando" });
-  // Por id do jogador: coordenadas normalizadas (0 a 1) em relação à orientação original
-  // do PNG e a função usada nesta tática (RF08). Só no estado da tela nesta etapa.
-  // Toda alteração passa pelo histórico (RF16): cada chamada de `alterar` é uma ação.
-  const historico = useHistorico<Record<number, Posicao>>({});
-  const { estado: posicoes, alterar } = historico;
-  const [aviso, setAviso] = useState<Aviso | null>(null);
-  // Rotação e lado são só de visualização: ficam fora do histórico.
-  const [rotacao, setRotacao] = useState<Rotacao>(0);
-  const [lado, setLado] = useState<Lado>("T");
-
-  // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai.
-  const desfazer = useCallback(() => {
-    setAviso(null);
-    historico.desfazer();
-  }, [historico.desfazer]);
-  const refazer = useCallback(() => {
-    setAviso(null);
-    historico.refazer();
-  }, [historico.refazer]);
-  useAtalhosHistorico(desfazer, refazer);
-
-  const carregarElenco = useCallback(async () => {
-    setElenco({ fase: "carregando" });
+  const carregar = useCallback(async () => {
+    setCarga({ fase: "carregando" });
+    if (taticaId !== undefined && !(taticaId > 0)) {
+      setCarga({ fase: "nao-encontrada" });
+      return;
+    }
     try {
-      const [jogadores, funcoes] = await Promise.all([listarJogadores(), listarFuncoes()]);
-      setElenco({ fase: "pronto", dados: { jogadores, funcoes } });
+      const [jogadores, funcoes, tatica] = await Promise.all([
+        listarJogadores(),
+        listarFuncoes(),
+        taticaId === undefined ? Promise.resolve(null) : obterTatica(taticaId),
+      ]);
+      setCarga({ fase: "pronto", jogadores, funcoes, tatica });
     } catch (falha) {
-      if (statusDoErro(falha) === 401) {
+      if (statusDoErro(falha) === 401 || statusDoErroTatica(falha) === 401) {
         navegar("/login", { substituir: true });
         return;
       }
-      setElenco({ fase: "erro", mensagem: mensagemDoErro(falha) });
+      if (statusDoErroTatica(falha) === 404) {
+        setCarga({ fase: "nao-encontrada" });
+        return;
+      }
+      const mensagem = statusDoErro(falha) !== null ? mensagemDoErro(falha) : mensagemDoErroTatica(falha);
+      setCarga({ fase: "erro", mensagem });
     }
-  }, []);
+  }, [taticaId]);
 
   const logado = sessao.fase === "pronto";
   useEffect(() => {
-    if (logado) void carregarElenco();
-  }, [logado, carregarElenco]);
-
-  // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
-  // É chamado só no fim do arraste (drop do elenco ou dragEnd no mapa): um arraste = uma ação.
-  const posicionar = useCallback(
-    (jogadorId: number, ponto: Ponto) => {
-      alterar((atual) => ({ ...atual, [jogadorId]: { ...ponto, funcaoId: atual[jogadorId]?.funcaoId ?? null } }));
-    },
-    [alterar],
-  );
-
-  // Tirar do mapa libera a função para uma nova sugestão.
-  function tirarDoMapa(jogadorId: number) {
-    setAviso(null);
-    alterar((atual) => {
-      if (!atual[jogadorId]) return atual;
-      const copia = { ...atual };
-      delete copia[jogadorId];
-      return copia;
-    });
-  }
-
-  // Troca a função só nesta tática; o cadastro do jogador não muda.
-  function trocarFuncao(jogadorId: number, funcaoId: number | null) {
-    setAviso(null);
-    alterar((atual) =>
-      atual[jogadorId] && atual[jogadorId].funcaoId !== funcaoId
-        ? { ...atual, [jogadorId]: { ...atual[jogadorId], funcaoId } }
-        : atual,
-    );
-  }
+    if (logado) void carregar();
+  }, [logado, carregar]);
 
   const usuario = sessao.fase === "pronto" ? sessao.usuario : null;
-  const lista = elenco.fase === "pronto" ? elenco.dados.jogadores : [];
-  const funcoes = elenco.fase === "pronto" ? elenco.dados.funcoes : [];
-  const nomesFuncoes = Object.fromEntries(funcoes.map((f) => [f.id, f.nome])) as Record<number, string>;
-  const nickPorId = Object.fromEntries(lista.map((j) => [j.id, j.nickname])) as Record<number, string>;
-  const repetidas = funcoesRepetidas(posicoes);
-  const vazias = lista.filter((j) => posicoes[j.id]?.funcaoId === null).length;
-
-  function sugerir() {
-    const resultado = sugerirFuncoes(lista, posicoes);
-    // O lote inteiro é uma ação só; sem nenhuma função sugerida, nada entra no histórico.
-    if (resultado.sugeridas.length > 0) alterar(() => resultado.posicoes);
-    const linhas: string[] = [];
-    const n = resultado.sugeridas.length;
-    linhas.push(n === 0 ? "Nenhuma função sugerida." : n === 1 ? "1 função sugerida." : `${n} funções sugeridas.`);
-    for (const item of resultado.semSugestao) {
-      linhas.push(
-        `${nickPorId[item.jogadorId]} ficou sem função: ${nomesFuncoes[item.funcaoId] ?? "a função principal"} já está com ${nickPorId[item.ocupadaPor]}.`,
-      );
-    }
-    setAviso({ tipo: resultado.semSugestao.length > 0 ? "atencao" : "sucesso", linhas });
-  }
+  const mapa = carga.fase === "pronto" ? mapaPorId(carga.tatica ? carga.tatica.mapa_id : (mapaId ?? "")) : null;
 
   return (
     <main className="flex h-screen min-w-0 flex-col gap-4 p-4">
@@ -179,18 +135,37 @@ export function Editor({ mapaId }: { mapaId: string }) {
         </p>
       )}
 
-      {sessao.fase === "carregando" && <p className="opacity-70">Carregando...</p>}
+      {(sessao.fase === "carregando" || (usuario && carga.fase === "carregando")) && (
+        <p className="opacity-70">Carregando...</p>
+      )}
       {sessao.fase === "erro" && (
         <p role="alert" className="text-red-400">
           {sessao.mensagem}
         </p>
       )}
 
-      {usuario && mapa === null && (
+      {usuario && carga.fase === "erro" && (
+        <section className="flex flex-col items-start gap-3 rounded-lg bg-painel p-8">
+          <p role="alert" className="text-red-400">
+            {carga.mensagem}
+          </p>
+          <button
+            type="button"
+            onClick={() => void carregar()}
+            className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque"
+          >
+            Tentar de novo
+          </button>
+        </section>
+      )}
+
+      {usuario && (carga.fase === "nao-encontrada" || (carga.fase === "pronto" && mapa === null)) && (
         <section className="rounded-lg bg-painel p-8">
-          <h1 className="mb-2 text-2xl font-bold">Mapa não encontrado</h1>
+          <h1 className="mb-2 text-2xl font-bold">
+            {carga.fase === "nao-encontrada" ? "Tática não encontrada" : "Mapa não encontrado"}
+          </h1>
           <p className="opacity-70">
-            Escolha um dos mapas disponíveis em{" "}
+            Abra uma das suas táticas ou comece outra em{" "}
             <Link para="/editor" className="font-semibold text-destaque underline">
               Nova tática
             </Link>
@@ -199,154 +174,399 @@ export function Editor({ mapaId }: { mapaId: string }) {
         </section>
       )}
 
-      {usuario && mapa !== null && (
-        <div className="flex min-h-0 flex-1 gap-4">
-          <aside aria-labelledby="titulo-elenco" className="flex w-64 shrink-0 flex-col gap-3 rounded-lg bg-painel p-4">
-            <h2 id="titulo-elenco" className="text-lg font-bold">
-              Elenco
-            </h2>
-            <p className="text-xs opacity-60">Arraste um jogador para o mapa.</p>
-
-            {elenco.fase === "carregando" && <p className="text-sm opacity-70">Carregando jogadores...</p>}
-            {elenco.fase === "erro" && (
-              <div className="flex flex-col items-start gap-2">
-                <p role="alert" className="text-sm text-red-400">
-                  {elenco.mensagem}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void carregarElenco()}
-                  className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque"
-                >
-                  Tentar de novo
-                </button>
-              </div>
-            )}
-            {elenco.fase === "pronto" && lista.length === 0 && (
-              <p className="text-sm opacity-70">
-                Nenhum jogador cadastrado.{" "}
-                <Link para="/jogadores" className="font-semibold text-destaque underline">
-                  Cadastre o elenco
-                </Link>
-                .
-              </p>
-            )}
-            {lista.length > 0 && (
-              <button
-                type="button"
-                onClick={sugerir}
-                disabled={vazias === 0}
-                title={
-                  vazias === 0 ? "Coloque jogadores no mapa; a sugestão preenche quem está sem função." : undefined
-                }
-                className="rounded-md border border-destaque px-3 py-1.5 text-sm font-bold text-destaque transition hover:bg-destaque hover:text-fundo disabled:cursor-not-allowed disabled:border-white/10 disabled:text-texto disabled:opacity-40 disabled:hover:bg-transparent"
-              >
-                Sugerir funções
-              </button>
-            )}
-            {aviso && (
-              <div
-                role="status"
-                className={
-                  "rounded-md px-3 py-2 text-xs " +
-                  (aviso.tipo === "atencao" ? "border border-destaque/40 bg-destaque/10" : "bg-fundo text-destaque")
-                }
-              >
-                {aviso.linhas.map((linha) => (
-                  <p key={linha}>{linha}</p>
-                ))}
-              </div>
-            )}
-            {lista.length > 0 && (
-              <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" aria-label="Jogadores do elenco">
-                {lista.map((jogador) => (
-                  <ItemElenco
-                    key={jogador.id}
-                    jogador={jogador}
-                    posicao={posicoes[jogador.id] ?? null}
-                    funcoes={funcoes}
-                    repetida={posicoes[jogador.id]?.funcaoId != null && repetidas.has(posicoes[jogador.id].funcaoId!)}
-                    aoTrocarFuncao={(funcaoId) => trocarFuncao(jogador.id, funcaoId)}
-                    aoTirar={() => tirarDoMapa(jogador.id)}
-                  />
-                ))}
-              </ul>
-            )}
-          </aside>
-
-          <section aria-label={`Mapa ${mapa.nome}`} className="flex min-w-0 flex-1 flex-col rounded-lg bg-painel">
-            <div className="flex items-center justify-between gap-4 border-b border-white/5 px-4 py-3">
-              <div className="flex items-baseline gap-3">
-                <h1 className="text-xl font-bold">{mapa.nome}</h1>
-                <Link para="/editor" className="text-sm opacity-70 underline hover:opacity-100">
-                  Trocar mapa
-                </Link>
-              </div>
-              <div className="flex items-center gap-3">
-                <div role="group" aria-label="Histórico" className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={desfazer}
-                    disabled={!historico.podeDesfazer}
-                    title="Desfazer (Ctrl+Z)"
-                    className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
-                  >
-                    Desfazer
-                  </button>
-                  <button
-                    type="button"
-                    onClick={refazer}
-                    disabled={!historico.podeRefazer}
-                    title="Refazer (Ctrl+Y ou Ctrl+Shift+Z)"
-                    className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
-                  >
-                    Refazer
-                  </button>
-                </div>
-                <div role="group" aria-label="Lado" className="flex overflow-hidden rounded-md border border-white/10">
-                  {(["T", "CT"] as const).map((opcao) => (
-                    <button
-                      key={opcao}
-                      type="button"
-                      aria-pressed={lado === opcao}
-                      onClick={() => setLado(opcao)}
-                      className={
-                        "px-3 py-1.5 text-sm font-bold transition " +
-                        (lado === opcao
-                          ? opcao === "T"
-                            ? "bg-time_t text-fundo"
-                            : "bg-time_ct text-fundo"
-                          : "opacity-70 hover:opacity-100")
-                      }
-                    >
-                      {opcao}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRotacao(proximaRotacao)}
-                  className="rounded-md bg-destaque px-3 py-1.5 text-sm font-bold text-fundo transition hover:brightness-110"
-                >
-                  Girar mapa <span data-testid="rotacao">({rotacao}°)</span>
-                </button>
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 p-2">
-              <MapaEditor
-                mapa={mapa}
-                rotacao={rotacao}
-                lado={lado}
-                jogadores={lista}
-                posicoes={posicoes}
-                nomesFuncoes={nomesFuncoes}
-                aoPosicionar={posicionar}
-              />
-            </div>
-          </section>
-        </div>
+      {usuario && carga.fase === "pronto" && mapa !== null && (
+        <AreaEditor mapa={mapa} jogadores={carga.jogadores} funcoes={carga.funcoes} tatica={carga.tatica} />
       )}
     </main>
+  );
+}
+
+type AreaEditorProps = {
+  mapa: Mapa;
+  jogadores: Jogador[];
+  funcoes: Funcao[];
+  tatica: Tatica | null; // null = rascunho
+};
+
+// Editor de tática, plano fixo: mapa ao centro e elenco à esquerda (seção 8).
+function AreaEditor({ mapa, jogadores: lista, funcoes, tatica }: AreaEditorProps) {
+  // Plano fixo: posições por jogador e posições sem jogador (RF08, RF08A). Toda alteração
+  // passa pelo histórico (RF16): cada chamada de `alterar` é uma ação.
+  const historico = useHistorico<Plano>(
+    tatica ? planoDaApi(tatica.posicoes, new Set(lista.map((j) => j.id))) : PLANO_VAZIO,
+  );
+  const { estado: plano, alterar } = historico;
+  const posicoes = plano.jogadores;
+  const [aviso, setAviso] = useState<Aviso | null>(null);
+  // Nome, lado e visibilidade vão ao banco, mas ficam fora do histórico (como na T4.3).
+  const [nome, setNome] = useState(tatica?.nome ?? NOME_PADRAO);
+  const [lado, setLado] = useState<Lado>(tatica?.lado ?? "T");
+  const [visibilidade, setVisibilidade] = useState<Visibilidade>(tatica?.visibilidade ?? "privada");
+  // Rotação é só de visualização: fica fora do histórico e do banco.
+  const [rotacao, setRotacao] = useState<Rotacao>(0);
+
+  // Salvamento em segundo plano (RNF01). O histórico não vai ao banco, só o estado atual.
+  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, posicoes: planoParaApi(plano) };
+  const salvamento = useSalvamento({
+    taticaId: tatica?.id ?? null,
+    mapaId: mapa.id,
+    dados,
+    salvoEm: tatica ? new Date(tatica.alterada_em) : null,
+    // Depois do primeiro salvamento, a URL passa a apontar para a tática salva. Sem
+    // avisar o roteamento, para o editor não ser recriado (e o histórico, perdido).
+    aoCriar: (id) => window.history.replaceState(null, "", `/taticas/${id}`),
+  });
+
+  // O aviso da sugestão descreve o estado em que foi dado; ao desfazer ou refazer, ele sai.
+  const desfazer = useCallback(() => {
+    setAviso(null);
+    historico.desfazer();
+  }, [historico.desfazer]);
+  const refazer = useCallback(() => {
+    setAviso(null);
+    historico.refazer();
+  }, [historico.refazer]);
+  useAtalhosHistorico(desfazer, refazer);
+
+  // Mover um jogador mantém a função dele na tática; quem entra no mapa chega sem função.
+  // É chamado só no fim do arraste (drop do elenco ou dragEnd no mapa): um arraste = uma ação.
+  const posicionar = useCallback(
+    (jogadorId: number, ponto: Ponto) => {
+      alterar((atual) => ({
+        ...atual,
+        jogadores: {
+          ...atual.jogadores,
+          [jogadorId]: { ...ponto, funcaoId: atual.jogadores[jogadorId]?.funcaoId ?? null },
+        },
+      }));
+    },
+    [alterar],
+  );
+
+  const moverSemJogador = useCallback(
+    (indice: number, ponto: Ponto) => {
+      alterar((atual) =>
+        atual.semJogador[indice]
+          ? {
+              ...atual,
+              semJogador: atual.semJogador.map((p, i) => (i === indice ? { ...p, ...ponto } : p)),
+            }
+          : atual,
+      );
+    },
+    [alterar],
+  );
+
+  // Tirar do mapa libera a função para uma nova sugestão.
+  function tirarDoMapa(jogadorId: number) {
+    setAviso(null);
+    alterar((atual) => {
+      if (!atual.jogadores[jogadorId]) return atual;
+      const copia = { ...atual.jogadores };
+      delete copia[jogadorId];
+      return { ...atual, jogadores: copia };
+    });
+  }
+
+  // Troca a função só nesta tática; o cadastro do jogador não muda.
+  function trocarFuncao(jogadorId: number, funcaoId: number | null) {
+    setAviso(null);
+    alterar((atual) =>
+      atual.jogadores[jogadorId] && atual.jogadores[jogadorId].funcaoId !== funcaoId
+        ? { ...atual, jogadores: { ...atual.jogadores, [jogadorId]: { ...atual.jogadores[jogadorId], funcaoId } } }
+        : atual,
+    );
+  }
+
+  function trocarFuncaoSemJogador(indice: number, funcaoId: number | null) {
+    setAviso(null);
+    alterar((atual) =>
+      atual.semJogador[indice] && atual.semJogador[indice].funcaoId !== funcaoId
+        ? { ...atual, semJogador: atual.semJogador.map((p, i) => (i === indice ? { ...p, funcaoId } : p)) }
+        : atual,
+    );
+  }
+
+  function tirarSemJogador(indice: number) {
+    setAviso(null);
+    alterar((atual) =>
+      atual.semJogador[indice] ? { ...atual, semJogador: atual.semJogador.filter((_, i) => i !== indice) } : atual,
+    );
+  }
+
+  const nomesFuncoes = Object.fromEntries(funcoes.map((f) => [f.id, f.nome])) as Record<number, string>;
+  const nickPorId = Object.fromEntries(lista.map((j) => [j.id, j.nickname])) as Record<number, string>;
+  // Posições sem jogador também contam para o aviso de função repetida (chaves negativas).
+  const repetidas = funcoesRepetidas({
+    ...posicoes,
+    ...Object.fromEntries(plano.semJogador.map((p, i) => [-(i + 1), p])),
+  });
+  const vazias = lista.filter((j) => posicoes[j.id]?.funcaoId === null).length;
+
+  function sugerir() {
+    const resultado = sugerirFuncoes(lista, posicoes);
+    // O lote inteiro é uma ação só; sem nenhuma função sugerida, nada entra no histórico.
+    if (resultado.sugeridas.length > 0) alterar((atual) => ({ ...atual, jogadores: resultado.posicoes }));
+    const linhas: string[] = [];
+    const n = resultado.sugeridas.length;
+    linhas.push(n === 0 ? "Nenhuma função sugerida." : n === 1 ? "1 função sugerida." : `${n} funções sugeridas.`);
+    for (const item of resultado.semSugestao) {
+      linhas.push(
+        `${nickPorId[item.jogadorId]} ficou sem função: ${nomesFuncoes[item.funcaoId] ?? "a função principal"} já está com ${nickPorId[item.ocupadaPor]}.`,
+      );
+    }
+    setAviso({ tipo: resultado.semSugestao.length > 0 ? "atencao" : "sucesso", linhas });
+  }
+
+  const ehRepetida = (posicao: Posicao | undefined) =>
+    posicao !== undefined && posicao.funcaoId !== null && repetidas.has(posicao.funcaoId);
+
+  return (
+    <div className="flex min-h-0 flex-1 gap-4">
+      <aside aria-labelledby="titulo-elenco" className="flex w-64 shrink-0 flex-col gap-3 rounded-lg bg-painel p-4">
+        <h2 id="titulo-elenco" className="text-lg font-bold">
+          Elenco
+        </h2>
+        <p className="text-xs opacity-60">Arraste um jogador para o mapa.</p>
+
+        {lista.length === 0 && (
+          <p className="text-sm opacity-70">
+            Nenhum jogador cadastrado.{" "}
+            <Link para="/jogadores" className="font-semibold text-destaque underline">
+              Cadastre o elenco
+            </Link>
+            .
+          </p>
+        )}
+        {lista.length > 0 && (
+          <button
+            type="button"
+            onClick={sugerir}
+            disabled={vazias === 0}
+            title={vazias === 0 ? "Coloque jogadores no mapa; a sugestão preenche quem está sem função." : undefined}
+            className="rounded-md border border-destaque px-3 py-1.5 text-sm font-bold text-destaque transition hover:bg-destaque hover:text-fundo disabled:cursor-not-allowed disabled:border-white/10 disabled:text-texto disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            Sugerir funções
+          </button>
+        )}
+        {aviso && (
+          <div
+            role="status"
+            className={
+              "rounded-md px-3 py-2 text-xs " +
+              (aviso.tipo === "atencao" ? "border border-destaque/40 bg-destaque/10" : "bg-fundo text-destaque")
+            }
+          >
+            {aviso.linhas.map((linha) => (
+              <p key={linha}>{linha}</p>
+            ))}
+          </div>
+        )}
+        {(lista.length > 0 || plano.semJogador.length > 0) && (
+          <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" aria-label="Jogadores do elenco">
+            {lista.map((jogador) => (
+              <ItemElenco
+                key={jogador.id}
+                jogador={jogador}
+                posicao={posicoes[jogador.id] ?? null}
+                funcoes={funcoes}
+                repetida={ehRepetida(posicoes[jogador.id])}
+                aoTrocarFuncao={(funcaoId) => trocarFuncao(jogador.id, funcaoId)}
+                aoTirar={() => tirarDoMapa(jogador.id)}
+              />
+            ))}
+            {plano.semJogador.map((posicao, indice) => (
+              <ItemSemJogador
+                key={`sem-jogador-${indice}`}
+                numero={indice + 1}
+                posicao={posicao}
+                funcoes={funcoes}
+                repetida={ehRepetida(posicao)}
+                aoTrocarFuncao={(funcaoId) => trocarFuncaoSemJogador(indice, funcaoId)}
+                aoTirar={() => tirarSemJogador(indice)}
+              />
+            ))}
+          </ul>
+        )}
+      </aside>
+
+      <section aria-label={`Mapa ${mapa.nome}`} className="flex min-w-0 flex-1 flex-col rounded-lg bg-painel">
+        <div className="flex flex-col gap-2 border-b border-white/5 px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <input
+                type="text"
+                value={nome}
+                maxLength={NOME_MAX}
+                onChange={(e) => setNome(e.target.value)}
+                aria-label="Nome da tática"
+                placeholder="Nome da tática"
+                className="w-72 rounded-md border border-white/10 bg-fundo px-2 py-1 text-lg font-bold focus:border-destaque focus:outline-none"
+              />
+              <h1 className="shrink-0 text-sm font-semibold opacity-70">{mapa.nome}</h1>
+              {tatica === null && (
+                <Link para="/editor" className="shrink-0 text-sm opacity-70 underline hover:opacity-100">
+                  Trocar mapa
+                </Link>
+              )}
+            </div>
+            <IndicadorSalvamento estado={salvamento.estado} aoTentarDeNovo={salvamento.tentarDeNovo} />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="opacity-70">Visibilidade</span>
+              <select
+                value={visibilidade}
+                onChange={(e) => setVisibilidade(e.target.value as Visibilidade)}
+                aria-label="Visibilidade"
+                className="rounded-md border border-white/10 bg-fundo px-2 py-1"
+              >
+                <option value="privada">Privada</option>
+                <option value="publica" disabled>
+                  Pública (em breve)
+                </option>
+              </select>
+              <span className="text-xs opacity-50">A publicação chega numa fase seguinte.</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <div role="group" aria-label="Histórico" className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={desfazer}
+                  disabled={!historico.podeDesfazer}
+                  title="Desfazer (Ctrl+Z)"
+                  className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
+                >
+                  Desfazer
+                </button>
+                <button
+                  type="button"
+                  onClick={refazer}
+                  disabled={!historico.podeRefazer}
+                  title="Refazer (Ctrl+Y ou Ctrl+Shift+Z)"
+                  className="rounded-md border border-white/10 px-3 py-1.5 text-sm font-semibold transition hover:border-destaque disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/10"
+                >
+                  Refazer
+                </button>
+              </div>
+              <div role="group" aria-label="Lado" className="flex overflow-hidden rounded-md border border-white/10">
+                {(["T", "CT"] as const).map((opcao) => (
+                  <button
+                    key={opcao}
+                    type="button"
+                    aria-pressed={lado === opcao}
+                    onClick={() => setLado(opcao)}
+                    className={
+                      "px-3 py-1.5 text-sm font-bold transition " +
+                      (lado === opcao
+                        ? opcao === "T"
+                          ? "bg-time_t text-fundo"
+                          : "bg-time_ct text-fundo"
+                        : "opacity-70 hover:opacity-100")
+                    }
+                  >
+                    {opcao}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRotacao(proximaRotacao)}
+                className="rounded-md bg-destaque px-3 py-1.5 text-sm font-bold text-fundo transition hover:brightness-110"
+              >
+                Girar mapa <span data-testid="rotacao">({rotacao}°)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 p-2">
+          <MapaEditor
+            mapa={mapa}
+            rotacao={rotacao}
+            lado={lado}
+            jogadores={lista}
+            posicoes={posicoes}
+            semJogador={plano.semJogador}
+            nomesFuncoes={nomesFuncoes}
+            aoPosicionar={posicionar}
+            aoMoverSemJogador={moverSemJogador}
+          />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function horaCurta(data: Date): string {
+  return data.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Indicador discreto do salvamento (RNF01).
+function IndicadorSalvamento({ estado, aoTentarDeNovo }: { estado: EstadoSalvamento; aoTentarDeNovo: () => void }) {
+  return (
+    <div
+      role="status"
+      data-testid="salvamento"
+      data-fase={estado.fase}
+      className="flex shrink-0 items-center gap-2 text-sm"
+    >
+      {estado.fase === "rascunho" && <span className="opacity-60">Rascunho: salva na primeira alteração</span>}
+      {estado.fase === "pendente" && <span className="opacity-60">Alterações não salvas</span>}
+      {estado.fase === "salvando" && <span className="opacity-70">Salvando...</span>}
+      {estado.fase === "salvo" && <span className="opacity-60">Salvo às {horaCurta(estado.em)}</span>}
+      {estado.fase === "invalido" && <span className="text-destaque">{estado.mensagem}</span>}
+      {estado.fase === "erro" && (
+        <>
+          <span className="text-red-400" title={estado.mensagem}>
+            Não foi possível salvar
+          </span>
+          <button
+            type="button"
+            onClick={aoTentarDeNovo}
+            className="rounded-md border border-white/10 px-2 py-1 text-xs font-semibold transition hover:border-destaque"
+          >
+            Tentar de novo
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SeletorFuncao({
+  rotulo,
+  posicao,
+  funcoes,
+  repetida,
+  aoTrocarFuncao,
+}: {
+  rotulo: string;
+  posicao: Posicao;
+  funcoes: Funcao[];
+  repetida: boolean;
+  aoTrocarFuncao: (funcaoId: number | null) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs">
+      <span className="opacity-60">Função nesta tática</span>
+      <select
+        value={posicao.funcaoId ?? ""}
+        onChange={(e) => aoTrocarFuncao(e.target.value === "" ? null : Number(e.target.value))}
+        aria-label={rotulo}
+        className={
+          "rounded-md border bg-painel px-2 py-1 text-sm " +
+          (posicao.funcaoId === null ? "border-white/10 opacity-70" : "border-destaque/60 text-destaque")
+        }
+      >
+        <option value="">Sem função</option>
+        {funcoes.map((funcao) => (
+          <option key={funcao.id} value={funcao.id}>
+            {funcao.nome}
+          </option>
+        ))}
+      </select>
+      {repetida && <span className="text-destaque">Outro jogador no mapa está com esta função.</span>}
+    </label>
   );
 }
 
@@ -399,27 +619,62 @@ function ItemElenco({ jogador, posicao, funcoes, repetida, aoTrocarFuncao, aoTir
         )}
       </div>
       {posicao && (
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="opacity-60">Função nesta tática</span>
-          <select
-            value={posicao.funcaoId ?? ""}
-            onChange={(e) => aoTrocarFuncao(e.target.value === "" ? null : Number(e.target.value))}
-            aria-label={`Função de ${jogador.nickname} nesta tática`}
-            className={
-              "rounded-md border bg-painel px-2 py-1 text-sm " +
-              (posicao.funcaoId === null ? "border-white/10 opacity-70" : "border-destaque/60 text-destaque")
-            }
-          >
-            <option value="">Sem função</option>
-            {funcoes.map((funcao) => (
-              <option key={funcao.id} value={funcao.id}>
-                {funcao.nome}
-              </option>
-            ))}
-          </select>
-          {repetida && <span className="text-destaque">Outro jogador no mapa está com esta função.</span>}
-        </label>
+        <SeletorFuncao
+          rotulo={`Função de ${jogador.nickname} nesta tática`}
+          posicao={posicao}
+          funcoes={funcoes}
+          repetida={repetida}
+          aoTrocarFuncao={aoTrocarFuncao}
+        />
       )}
+    </li>
+  );
+}
+
+type ItemSemJogadorProps = {
+  numero: number;
+  posicao: Posicao;
+  funcoes: Funcao[];
+  repetida: boolean;
+  aoTrocarFuncao: (funcaoId: number | null) => void;
+  aoTirar: () => void;
+};
+
+// Posição cujo jogador foi removido do elenco (RF08A): mantém a função, sem jogador.
+function ItemSemJogador({ numero, posicao, funcoes, repetida, aoTrocarFuncao, aoTirar }: ItemSemJogadorProps) {
+  const rotulo = `Posição sem jogador ${numero}`;
+  return (
+    <li
+      aria-label={rotulo}
+      data-sem-jogador={numero}
+      data-x={formatar(posicao.x)}
+      data-y={formatar(posicao.y)}
+      data-funcao-id={posicao.funcaoId ?? undefined}
+      className="flex flex-col gap-2 rounded-md border border-dashed border-white/15 bg-fundo p-2"
+    >
+      <div className="flex items-center gap-3">
+        <Avatar iniciais="?" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-bold opacity-80">Sem jogador</p>
+          <p className="truncate text-xs opacity-60">O jogador foi removido do elenco.</p>
+        </div>
+        <button
+          type="button"
+          onClick={aoTirar}
+          aria-label={`Tirar ${rotulo.toLowerCase()} do mapa`}
+          title="Tirar do mapa"
+          className="shrink-0 rounded px-1.5 text-sm opacity-60 transition hover:text-red-400 hover:opacity-100"
+        >
+          ✕
+        </button>
+      </div>
+      <SeletorFuncao
+        rotulo={`Função da ${rotulo.toLowerCase()}`}
+        posicao={posicao}
+        funcoes={funcoes}
+        repetida={repetida}
+        aoTrocarFuncao={aoTrocarFuncao}
+      />
     </li>
   );
 }

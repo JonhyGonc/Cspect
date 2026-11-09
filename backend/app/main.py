@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.database import check_database
 from app.routers.auth import router as auth_router
 from app.routers.jogadores import router as jogadores_router
+from app.routers.taticas import router as taticas_router
 
 app = FastAPI(title="Cspect API", version="0.1.0")
 
@@ -20,6 +21,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(jogadores_router)
+app.include_router(taticas_router)
 
 
 @app.exception_handler(RequestValidationError)

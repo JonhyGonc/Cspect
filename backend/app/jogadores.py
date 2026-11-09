@@ -183,8 +183,8 @@ def atualizar_jogador(
 def remover_jogador(usuario_id: int, jogador_id: int) -> None:
     """Apaga o jogador. As funções secundárias saem junto (ON DELETE CASCADE).
 
-    RF08A (manter a posição na tática sem jogador) será tratado na fase do editor,
-    quando as táticas existirem.
+    RF08A: nas táticas, a posição do jogador continua com a função e fica sem jogador
+    (posicoes_quadro.jogador_id é ON DELETE SET NULL, migração 004).
     """
     with _conectar() as conexao:
         apagados = conexao.execute(

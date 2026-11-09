@@ -16,10 +16,16 @@ export default function App() {
   if (caminho === "/jogadores") return <Jogadores />;
   if (caminho === "/status") return <Status />;
   if (caminho === "/editor") return <SelecaoMapa />;
-  // /editor/<mapa>: o key recria o editor ao trocar de mapa, zerando posições e rotação.
+  // /editor/<mapa>: rascunho de tática nova. O key recria o editor ao trocar de mapa.
   if (caminho.startsWith("/editor/")) {
     const mapaId = decodificar(caminho.slice("/editor/".length));
-    return <Editor key={mapaId} mapaId={mapaId} />;
+    return <Editor key={`novo:${mapaId}`} mapaId={mapaId} />;
+  }
+  // /taticas/<id>: tática salva, reaberta no editor. Id inválido mostra "Tática não encontrada".
+  if (caminho.startsWith("/taticas/")) {
+    const trecho = caminho.slice("/taticas/".length);
+    const taticaId = /^[1-9][0-9]{0,15}$/.test(trecho) ? Number(trecho) : 0;
+    return <Editor key={`tatica:${taticaId}`} taticaId={taticaId} />;
   }
 
   // "/" e qualquer rota desconhecida vão para o login.

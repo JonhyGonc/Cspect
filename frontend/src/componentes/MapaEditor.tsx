@@ -73,14 +73,27 @@ type Props = {
   lado: Lado;
   jogadores: Jogador[];
   posicoes: Record<number, Posicao>;
+  // Posições cujo jogador foi removido do elenco (RF08A): continuam no mapa com a função.
+  semJogador: Posicao[];
   // Nome de cada função por id (GET /api/funcoes), para o rótulo no mapa.
   nomesFuncoes: Record<number, string>;
   aoPosicionar: (jogadorId: number, ponto: Ponto) => void;
+  aoMoverSemJogador: (indice: number, ponto: Ponto) => void;
 };
 
 // Mapa do editor com Konva (seção 10): imagem de fundo na proporção original, girada
 // só na tela, e os jogadores posicionados em coordenadas normalizadas (RF08).
-export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, nomesFuncoes, aoPosicionar }: Props) {
+export function MapaEditor({
+  mapa,
+  rotacao,
+  lado,
+  jogadores,
+  posicoes,
+  semJogador,
+  nomesFuncoes,
+  aoPosicionar,
+  aoMoverSemJogador,
+}: Props) {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const { largura, altura } = useTamanho(areaRef);
@@ -148,7 +161,9 @@ export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, nomesFunc
               return (
                 <MarcadorJogador
                   key={jogador.id}
-                  jogador={jogador}
+                  id={`jogador-${jogador.id}`}
+                  iniciais={jogador.avatar || "?"}
+                  nome={jogador.nickname}
                   cor={COR_LADO[lado]}
                   funcao={funcao}
                   posicao={normalizadoParaTela(ponto, rotacao, quadro)}
@@ -158,6 +173,21 @@ export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, nomesFunc
                 />
               );
             })}
+            {semJogador.map((ponto, indice) => (
+              <MarcadorJogador
+                key={`sem-jogador-${indice}`}
+                id={`sem-jogador-${indice}`}
+                iniciais="?"
+                nome="Sem jogador"
+                cor={COR_LADO[lado]}
+                opacidade={0.6}
+                funcao={ponto.funcaoId === null ? null : (nomesFuncoes[ponto.funcaoId] ?? null)}
+                posicao={normalizadoParaTela(ponto, rotacao, quadro)}
+                quadro={quadro}
+                aoSoltar={(tela) => aoMoverSemJogador(indice, telaParaNormalizado(tela, rotacao, quadro))}
+                areaRef={areaRef}
+              />
+            ))}
           </Layer>
         </Stage>
       )}
@@ -166,8 +196,11 @@ export function MapaEditor({ mapa, rotacao, lado, jogadores, posicoes, nomesFunc
 }
 
 type MarcadorProps = {
-  jogador: Jogador;
+  id: string;
+  iniciais: string;
+  nome: string;
   cor: string;
+  opacidade?: number;
   funcao: string | null;
   posicao: Ponto;
   quadro: Enquadramento;
@@ -175,7 +208,18 @@ type MarcadorProps = {
   areaRef: RefObject<HTMLDivElement>;
 };
 
-function MarcadorJogador({ jogador, cor, funcao, posicao, quadro, aoSoltar, areaRef }: MarcadorProps) {
+function MarcadorJogador({
+  id,
+  iniciais,
+  nome,
+  cor,
+  opacidade = 1,
+  funcao,
+  posicao,
+  quadro,
+  aoSoltar,
+  areaRef,
+}: MarcadorProps) {
   function cursor(valor: string) {
     if (areaRef.current) areaRef.current.style.cursor = valor;
   }
@@ -186,7 +230,7 @@ function MarcadorJogador({ jogador, cor, funcao, posicao, quadro, aoSoltar, area
       y={posicao.y}
       draggable
       name="jogador"
-      id={`jogador-${jogador.id}`}
+      id={id}
       // O marcador não sai de cima do mapa.
       dragBoundFunc={(p) => ({
         x: Math.min(quadro.x + quadro.largura, Math.max(quadro.x, p.x)),
@@ -197,9 +241,9 @@ function MarcadorJogador({ jogador, cor, funcao, posicao, quadro, aoSoltar, area
       onMouseLeave={() => cursor("")}
       onDragStart={() => cursor("grabbing")}
     >
-      <Circle radius={RAIO_JOGADOR} fill={cor} stroke={COR_FUNDO} strokeWidth={2} />
+      <Circle radius={RAIO_JOGADOR} fill={cor} opacity={opacidade} stroke={COR_FUNDO} strokeWidth={2} />
       <Text
-        text={jogador.avatar || "?"}
+        text={iniciais}
         width={RAIO_JOGADOR * 2}
         height={RAIO_JOGADOR * 2}
         offsetX={RAIO_JOGADOR}
@@ -211,7 +255,7 @@ function MarcadorJogador({ jogador, cor, funcao, posicao, quadro, aoSoltar, area
         fill={COR_FUNDO}
       />
       <Text
-        text={jogador.nickname}
+        text={nome}
         width={120}
         offsetX={60}
         y={RAIO_JOGADOR + 3}
