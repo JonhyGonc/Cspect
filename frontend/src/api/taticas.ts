@@ -10,11 +10,30 @@ export type PosicaoApi = {
   y: number;
 };
 
+// Ponto normalizado [x, y], na orientação original do PNG.
+export type PontoApi = [number, number];
+
+export type UtilitarioApi = {
+  tipo: "smoke" | "flash" | "molotov" | "he";
+  x: number;
+  y: number;
+  trajetoria: PontoApi[] | null;
+  duracao: number | null;
+};
+
+export type TracoApi = {
+  jogador_id: number | null;
+  pontos: PontoApi[];
+  status: "rascunho" | "confirmado";
+};
+
 export type DadosTatica = {
   nome: string;
   lado: Lado;
   visibilidade: Visibilidade;
   posicoes: PosicaoApi[];
+  utilitarios: UtilitarioApi[];
+  tracos: TracoApi[];
 };
 
 export type TaticaResumo = {
@@ -29,6 +48,8 @@ export type TaticaResumo = {
 export type Tatica = TaticaResumo & {
   criada_em: string;
   posicoes: PosicaoApi[];
+  utilitarios: UtilitarioApi[];
+  tracos: TracoApi[];
 };
 
 export class ErroTatica extends Error {
