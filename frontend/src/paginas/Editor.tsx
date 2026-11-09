@@ -11,10 +11,12 @@ import {
   mensagemDoErroTatica,
   obterTatica,
   statusDoErroTatica,
+  type Classificacao,
   type DadosTatica,
   type Tatica,
   type Visibilidade,
 } from "../api/taticas";
+import { listarReferencias, type Referencias } from "../api/referencias";
 import { listarSequencias, type SequenciaApi } from "../api/sequencias";
 import { BarraUtilitarios } from "../componentes/BarraUtilitarios";
 import { Cabecalho } from "../componentes/Cabecalho";
@@ -22,6 +24,7 @@ import { CamadaCaptura, CamadaPlano, MenuCaminho } from "../componentes/CamadaDe
 import { IndicadorSalvamento } from "../componentes/IndicadorSalvamento";
 import { ItemElenco, ItemSemJogador } from "../componentes/ItensElenco";
 import { LinhaDoTempo } from "../componentes/LinhaDoTempo";
+import { PainelClassificacao } from "../componentes/PainelClassificacao";
 import { COR_LADO, MapaEditor, type Lado } from "../componentes/MapaEditor";
 import { useSessao } from "../componentes/useSessao";
 import { proximaRotacao, type Ponto, type Rotacao } from "../editor/coordenadas";
@@ -39,7 +42,14 @@ import { Link, navegar } from "../roteamento";
 
 type Carga =
   | { fase: "carregando" }
-  | { fase: "pronto"; jogadores: Jogador[]; funcoes: Funcao[]; tatica: Tatica | null; sequencias: SequenciaApi[] }
+  | {
+      fase: "pronto";
+      jogadores: Jogador[];
+      funcoes: Funcao[];
+      referencias: Referencias;
+      tatica: Tatica | null;
+      sequencias: SequenciaApi[];
+    }
   | { fase: "nao-encontrada" }
   | { fase: "erro"; mensagem: string };
 
@@ -75,13 +85,14 @@ export function Editor({ mapaId, taticaId }: { mapaId?: string; taticaId?: numbe
       return;
     }
     try {
-      const [jogadores, funcoes, tatica, sequencias] = await Promise.all([
+      const [jogadores, funcoes, referencias, tatica, sequencias] = await Promise.all([
         listarJogadores(),
         listarFuncoes(),
+        listarReferencias(),
         taticaId === undefined ? Promise.resolve(null) : obterTatica(taticaId),
         taticaId === undefined ? Promise.resolve([]) : listarSequencias(taticaId),
       ]);
-      setCarga({ fase: "pronto", jogadores, funcoes, tatica, sequencias });
+      setCarga({ fase: "pronto", jogadores, funcoes, referencias, tatica, sequencias });
     } catch (falha) {
       if (statusDoErro(falha) === 401 || statusDoErroTatica(falha) === 401) {
         navegar("/login", { substituir: true });
@@ -159,6 +170,7 @@ export function Editor({ mapaId, taticaId }: { mapaId?: string; taticaId?: numbe
           mapa={mapa}
           jogadores={carga.jogadores}
           funcoes={carga.funcoes}
+          referencias={carga.referencias}
           tatica={carga.tatica}
           sequencias={carga.sequencias}
         />
@@ -171,13 +183,21 @@ type AreaEditorProps = {
   mapa: Mapa;
   jogadores: Jogador[];
   funcoes: Funcao[];
+  referencias: Referencias;
   tatica: Tatica | null; // null = rascunho
   sequencias: SequenciaApi[];
 };
 
 // Editor de tática: mapa ao centro, elenco à esquerda, barra de utilitários no topo e linha
 // do tempo embaixo (seção 8).
-function AreaEditor({ mapa, jogadores: lista, funcoes, tatica, sequencias: sequenciasIniciais }: AreaEditorProps) {
+function AreaEditor({
+  mapa,
+  jogadores: lista,
+  funcoes,
+  referencias,
+  tatica,
+  sequencias: sequenciasIniciais,
+}: AreaEditorProps) {
   // Plano fixo: posições por jogador e sem jogador (RF08, RF08A), utilitários (RF10) e
   // traços (RF09). Toda alteração passa pelo histórico (RF16): cada `alterar` é uma ação.
   const historico = useHistorico<Plano>(
@@ -194,11 +214,23 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica, sequencias: seque
   const [nome, setNome] = useState(tatica?.nome ?? NOME_PADRAO);
   const [lado, setLado] = useState<Lado>(tatica?.lado ?? "T");
   const [visibilidade, setVisibilidade] = useState<Visibilidade>(tatica?.visibilidade ?? "privada");
+  // Classificação da biblioteca (RF18): salva com a tática, fora do histórico.
+  const [classificacao, setClassificacao] = useState<Classificacao>({
+    execucoes: tatica?.execucoes ?? [],
+    economias: tatica?.economias ?? [],
+    objetivos: tatica?.objetivos ?? [],
+  });
   // Rotação é só de visualização: fica fora do histórico e do banco.
   const [rotacao, setRotacao] = useState<Rotacao>(0);
 
   // Salvamento em segundo plano (RNF01). O histórico não vai ao banco, só o estado atual.
-  const dados: DadosTatica = { nome: nome.trim(), lado, visibilidade, ...planoParaApi(planoFixo) };
+  const dados: DadosTatica = {
+    nome: nome.trim(),
+    lado,
+    visibilidade,
+    ...classificacao,
+    ...planoParaApi(planoFixo),
+  };
   const salvamento = useSalvamento({
     taticaId: tatica?.id ?? null,
     mapaId: mapa.id,
@@ -442,6 +474,7 @@ function AreaEditor({ mapa, jogadores: lista, funcoes, tatica, sequencias: seque
                   Trocar mapa
                 </Link>
               )}
+              <PainelClassificacao referencias={referencias} valor={classificacao} aoMudar={setClassificacao} />
             </div>
             <IndicadorSalvamento estado={estadoSalvamento} aoTentarDeNovo={tentarDeNovo} />
           </div>

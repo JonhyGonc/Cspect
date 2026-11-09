@@ -3,6 +3,7 @@ import { Cadastro } from "./paginas/Cadastro";
 import { Editor } from "./paginas/Editor";
 import { Jogadores } from "./paginas/Jogadores";
 import { Login } from "./paginas/Login";
+import { MinhasTaticas } from "./paginas/MinhasTaticas";
 import { SelecaoMapa } from "./paginas/SelecaoMapa";
 import { Status } from "./paginas/Status";
 import { Redirecionar, useCaminho } from "./roteamento";
@@ -14,6 +15,7 @@ export default function App() {
   if (caminho === "/login") return <Login />;
   if (caminho === "/biblioteca") return <Biblioteca />;
   if (caminho === "/jogadores") return <Jogadores />;
+  if (caminho === "/minhas-taticas") return <MinhasTaticas />;
   if (caminho === "/status") return <Status />;
   if (caminho === "/editor") return <SelecaoMapa />;
   // /editor/<mapa>: rascunho de tática nova. O key recria o editor ao trocar de mapa.

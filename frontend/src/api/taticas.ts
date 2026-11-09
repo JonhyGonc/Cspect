@@ -28,7 +28,14 @@ export type TracoApi = {
   status: "rascunho" | "confirmado";
 };
 
-export type DadosTatica = {
+// Classificação (RF18): ids das listas fixas de GET /api/referencias.
+export type Classificacao = {
+  execucoes: number[];
+  economias: number[];
+  objetivos: number[];
+};
+
+export type DadosTatica = Classificacao & {
   nome: string;
   lado: Lado;
   visibilidade: Visibilidade;
@@ -37,18 +44,31 @@ export type DadosTatica = {
   tracos: TracoApi[];
 };
 
-export type TaticaResumo = {
+// Cartão da biblioteca (RF19): posicoes é o plano fixo (para a miniatura) e jogadores, a
+// quantidade de posições com jogador, calculada pelo servidor.
+export type TaticaResumo = Classificacao & {
   id: number;
   nome: string;
   mapa_id: string;
   lado: Lado;
   visibilidade: Visibilidade;
   alterada_em: string;
+  jogadores: number;
+  posicoes: PosicaoApi[];
+};
+
+// Filtros da biblioteca (RF18). Dentro de uma categoria, qualquer uma das opções (OU);
+// entre filtros, todos (E).
+export type FiltrosTaticas = Partial<Classificacao> & {
+  mapa_id?: string;
+  lado?: Lado;
+  jogadores_min?: number;
+  jogadores_max?: number;
+  busca?: string;
 };
 
 export type Tatica = TaticaResumo & {
   criada_em: string;
-  posicoes: PosicaoApi[];
   utilitarios: UtilitarioApi[];
   tracos: TracoApi[];
 };
@@ -108,8 +128,18 @@ async function erroDe(resposta: Response): Promise<ErroTatica> {
   }
 }
 
-export async function listarTaticas(): Promise<TaticaResumo[]> {
-  const resposta = await enviar("/api/taticas");
+export async function listarTaticas(filtros: FiltrosTaticas = {}): Promise<TaticaResumo[]> {
+  const consulta = new URLSearchParams();
+  if (filtros.mapa_id) consulta.set("mapa_id", filtros.mapa_id);
+  if (filtros.lado) consulta.set("lado", filtros.lado);
+  filtros.execucoes?.forEach((id) => consulta.append("execucao", String(id)));
+  filtros.economias?.forEach((id) => consulta.append("economia", String(id)));
+  filtros.objetivos?.forEach((id) => consulta.append("objetivo", String(id)));
+  if (filtros.jogadores_min !== undefined) consulta.set("jogadores_min", String(filtros.jogadores_min));
+  if (filtros.jogadores_max !== undefined) consulta.set("jogadores_max", String(filtros.jogadores_max));
+  if (filtros.busca?.trim()) consulta.set("busca", filtros.busca.trim());
+  const texto = consulta.toString();
+  const resposta = await enviar(texto ? `/api/taticas?${texto}` : "/api/taticas");
   if (!resposta.ok) throw await erroDe(resposta);
   return (await resposta.json()) as TaticaResumo[];
 }

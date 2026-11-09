@@ -243,23 +243,59 @@ class _DadosTatica(BaseModel):
         return valor
 
 
+# Classificação da tática (RF18): ids das listas fixas de execução, economia e objetivo.
+# Pode haver mais de uma opção por categoria; ids repetidos contam uma vez.
+IdClassificacao = Annotated[int, Field(strict=True, ge=1, le=32767)]
+ListaClassificacao = Annotated[list[IdClassificacao], Field(max_length=10)]
+
+
 class TaticaCriar(_DadosTatica):
     """POST /api/taticas: o mapa é escolhido na criação e não muda depois."""
 
     mapa_id: MapaId
+    execucoes: ListaClassificacao = Field(default_factory=list)
+    economias: ListaClassificacao = Field(default_factory=list)
+    objetivos: ListaClassificacao = Field(default_factory=list)
 
 
 class TaticaAtualizar(_DadosTatica):
-    """PUT /api/taticas/{id}: substitui nome, lado, visibilidade e o plano fixo."""
+    """PUT /api/taticas/{id}: substitui nome, lado, visibilidade, o plano fixo e, quando
+    informadas, as classificações. Classificação ausente (null) fica como está; lista vazia
+    apaga a classificação daquela categoria."""
+
+    execucoes: ListaClassificacao | None = None
+    economias: ListaClassificacao | None = None
+    objetivos: ListaClassificacao | None = None
 
 
 class TaticaResumo(BaseModel):
+    """Cartão da biblioteca (RF19). posicoes é o plano fixo, para a miniatura; jogadores é
+    a quantidade de posições com jogador, calculada a cada consulta (não fica no banco)."""
+
     id: int
     nome: str
     mapa_id: str
     lado: str
     visibilidade: str
     alterada_em: datetime
+    execucoes: list[int]
+    economias: list[int]
+    objetivos: list[int]
+    jogadores: int
+    posicoes: list[PosicaoQuadro]
+
+
+class ItemReferencia(BaseModel):
+    id: int
+    nome: str
+
+
+class Referencias(BaseModel):
+    """GET /api/referencias: as listas fixas dos filtros (RF18)."""
+
+    execucoes: list[ItemReferencia]
+    economias: list[ItemReferencia]
+    objetivos: list[ItemReferencia]
 
 
 class Tatica(TaticaResumo):
