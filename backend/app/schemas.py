@@ -267,3 +267,102 @@ class Tatica(TaticaResumo):
     posicoes: list[PosicaoQuadro]
     utilitarios: list[UtilitarioQuadro]
     tracos: list[Traco]
+
+
+# --- Sequências e linha do tempo (fase 6: RF13, RF14, RF15) ------------------
+
+SEQUENCIAS_MAX = 10  # por tática
+MARCACOES_MAX = 50  # por sequência
+NOME_SEQUENCIA_MAX = 60
+INSTANTE_MAX_MS = 3_600_000  # 1 hora, em milissegundos
+
+OrigemSequencia = Literal["zero", "plano"]
+TipoMarcacao = Literal["manual", "automatica"]
+# Identidade do utilitário entre as marcações de uma sequência (RF14).
+RefUtilitario = Annotated[str, Field(strict=True, pattern=r"^[A-Za-z0-9_-]{1,16}$")]
+
+
+def _nome_sequencia(valor: str) -> str:
+    limpo = valor.strip()
+    if not 1 <= len(limpo) <= NOME_SEQUENCIA_MAX:
+        raise ValueError(f"O nome da sequência deve ter entre 1 e {NOME_SEQUENCIA_MAX} caracteres.")
+    return limpo
+
+
+class UtilitarioMarcacao(UtilitarioQuadro):
+    """Utilitário numa marcação: igual ao do plano fixo, com a ref que o identifica."""
+
+    ref: RefUtilitario
+
+
+class Marcacao(BaseModel):
+    """Marcação da linha do tempo (RF14): um quadro com instante, em milissegundos."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instante: Annotated[int, Field(strict=True, ge=0, le=INSTANTE_MAX_MS)]
+    tipo: TipoMarcacao = "manual"
+    posicoes: list[PosicaoQuadro] = Field(default_factory=list, max_length=POSICOES_MAX)
+    utilitarios: list[UtilitarioMarcacao] = Field(default_factory=list, max_length=UTILITARIOS_MAX)
+    tracos: list[Traco] = Field(default_factory=list, max_length=TRACOS_MAX)
+
+    @field_validator("posicoes")
+    @classmethod
+    def jogador_uma_vez(cls, valor: list[PosicaoQuadro]) -> list[PosicaoQuadro]:
+        ids = [p.jogador_id for p in valor if p.jogador_id is not None]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Cada jogador pode ocupar só uma posição na marcação.")
+        return valor
+
+    @field_validator("utilitarios")
+    @classmethod
+    def ref_uma_vez(cls, valor: list[UtilitarioMarcacao]) -> list[UtilitarioMarcacao]:
+        refs = [u.ref for u in valor]
+        if len(set(refs)) != len(refs):
+            raise ValueError("Cada utilitário aparece uma vez por marcação.")
+        return valor
+
+
+class SequenciaCriar(BaseModel):
+    """POST /api/taticas/{id}/sequencias: do zero (marcação vazia em 0) ou do plano fixo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nome: str
+    origem: OrigemSequencia
+
+    @field_validator("nome")
+    @classmethod
+    def validar_nome(cls, valor: str) -> str:
+        return _nome_sequencia(valor)
+
+
+class SequenciaAtualizar(BaseModel):
+    """PUT /api/taticas/{id}/sequencias/{sid}: renomeia e substitui as marcações."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nome: str
+    marcacoes: list[Marcacao] = Field(min_length=1, max_length=MARCACOES_MAX)
+
+    @field_validator("nome")
+    @classmethod
+    def validar_nome(cls, valor: str) -> str:
+        return _nome_sequencia(valor)
+
+    @field_validator("marcacoes")
+    @classmethod
+    def instante_uma_vez(cls, valor: list[Marcacao]) -> list[Marcacao]:
+        instantes = [m.instante for m in valor]
+        if len(set(instantes)) != len(instantes):
+            raise ValueError("Duas marcações não podem ter o mesmo instante.")
+        return valor
+
+
+class Sequencia(BaseModel):
+    id: int
+    nome: str
+    origem: str
+    criada_em: datetime
+    alterada_em: datetime
+    marcacoes: list[Marcacao]

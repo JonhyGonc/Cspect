@@ -1,7 +1,7 @@
 import type { Jogador } from "../api/jogadores";
 import type { Plano } from "../editor/plano";
 import type { Ferramentas } from "../editor/useFerramentas";
-import { descreverDuracao, ORDEM_TIPOS, TIPOS_UTILITARIO, type TipoUtilitario } from "../editor/utilitarios";
+import { DURACAO_MAX, ORDEM_TIPOS, TIPOS_UTILITARIO, type TipoUtilitario } from "../editor/utilitarios";
 
 const BOTAO =
   "rounded-md border px-3 py-1.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
@@ -90,9 +90,38 @@ export function BarraUtilitarios({ ferramentas: f, plano, jogadores, nomeDoJogad
                 </option>
               ))}
             </select>
-            <span className="text-xs opacity-60" title="Duração padrão do jogo (RF11)">
-              Duração: {descreverDuracao(utilitario)}
-            </span>
+            {utilitario.duracao === null ? (
+              <span className="text-xs opacity-60">Duração: momento</span>
+            ) : (
+              <label
+                className="flex items-center gap-1 text-xs"
+                title={
+                  TIPOS_UTILITARIO[utilitario.tipo].nota
+                    ? `Padrão: ${TIPOS_UTILITARIO[utilitario.tipo].duracaoPadrao} s (${TIPOS_UTILITARIO[utilitario.tipo].nota})`
+                    : undefined
+                }
+              >
+                <span className="opacity-60">Duração</span>
+                {/* Grava ao sair do campo ou com Enter: um ajuste é uma ação só. */}
+                <input
+                  key={`${selecao.indice}-${utilitario.duracao}`}
+                  type="number"
+                  min={1}
+                  max={DURACAO_MAX}
+                  step={1}
+                  defaultValue={utilitario.duracao}
+                  aria-label="Duração em segundos"
+                  className="w-14 rounded-md border border-white/10 bg-fundo px-1 py-0.5"
+                  onBlur={(e) => f.ajustarDuracaoUtilitario(selecao.indice, Number(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                />
+                <span className="opacity-60">
+                  s{TIPOS_UTILITARIO[utilitario.tipo].nota ? ` (${TIPOS_UTILITARIO[utilitario.tipo].nota})` : ""}
+                </span>
+              </label>
+            )}
             <button
               type="button"
               className={PEQUENO}

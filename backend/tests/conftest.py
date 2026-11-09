@@ -30,7 +30,7 @@ def cliente(banco_migrado):
         # funcoes não entra: é a lista fixa preenchida pela migração 003.
         conexao.execute(
             "TRUNCATE usuarios, sessoes, jogadores, jogador_funcoes_secundarias, taticas, quadros, posicoes_quadro,"
-            " utilitarios_quadro, tracos RESTART IDENTITY"
+            " utilitarios_quadro, tracos, sequencias RESTART IDENTITY"
         )
 
     with TestClient(app) as cliente_http:

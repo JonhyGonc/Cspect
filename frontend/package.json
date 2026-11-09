@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test src/editor/historico.test.ts"
+    "test": "node --experimental-strip-types --test src/editor/historico.test.ts src/editor/interpolacao.test.ts"
   },
   "dependencies": {
     "konva": "^10.9.1",

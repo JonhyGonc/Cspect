@@ -41,3 +41,20 @@ export function IndicadorSalvamento({
     </div>
   );
 }
+
+// Prioridade do indicador quando a tática e as sequências gravam em separado.
+const PRIORIDADE: Record<EstadoSalvamento["fase"], number> = {
+  erro: 5,
+  invalido: 4,
+  salvando: 3,
+  pendente: 2,
+  salvo: 1,
+  rascunho: 0,
+};
+
+export function combinarEstados(estados: EstadoSalvamento[]): EstadoSalvamento {
+  return estados.reduce((a, b) => {
+    if (PRIORIDADE[b.fase] !== PRIORIDADE[a.fase]) return PRIORIDADE[b.fase] > PRIORIDADE[a.fase] ? b : a;
+    return a.fase === "salvo" && b.fase === "salvo" && b.em > a.em ? b : a;
+  });
+}

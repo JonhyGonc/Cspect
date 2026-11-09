@@ -34,6 +34,7 @@ export function planoParaApi(plano: Plano): PlanoApi {
   return {
     posicoes: [...comJogador, ...semJogador],
     utilitarios: plano.utilitarios.map((u) => ({
+      ...(u.ref !== undefined ? { ref: u.ref } : {}),
       tipo: u.tipo,
       x: u.x,
       y: u.y,
@@ -51,6 +52,7 @@ export function planoDaApi(api: PlanoApi, idsDoElenco: Set<number>): Plano {
     jogadores: {},
     semJogador: [],
     utilitarios: api.utilitarios.map((u) => ({
+      ...(u.ref ? { ref: u.ref } : {}),
       tipo: u.tipo,
       x: u.x,
       y: u.y,

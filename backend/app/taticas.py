@@ -52,6 +52,39 @@ def listar_taticas(usuario_id: int) -> list[dict]:
     return [_resumo(linha) for linha in linhas]
 
 
+def conteudo_quadros(cursor, quadro_ids: list[int], *, com_ref: bool = False) -> dict[int, dict]:
+    """Posições, utilitários e traços de cada quadro, na ordem em que foram gravados.
+
+    Serve ao plano fixo e às marcações da linha do tempo (um único conceito de quadro).
+    com_ref inclui a identidade do utilitário entre marcações (só nas sequências).
+    """
+    conteudo = {q: {"posicoes": [], "utilitarios": [], "tracos": []} for q in quadro_ids}
+    if not quadro_ids:
+        return conteudo
+    for quadro_id, jogador_id, funcao_id, x, y in cursor.execute(
+        "SELECT quadro_id, jogador_id, funcao_id, x, y FROM posicoes_quadro WHERE quadro_id = ANY(%s) ORDER BY id",
+        (quadro_ids,),
+    ).fetchall():
+        conteudo[quadro_id]["posicoes"].append({"jogador_id": jogador_id, "funcao_id": funcao_id, "x": x, "y": y})
+    for quadro_id, tipo, x, y, trajetoria, duracao, ref in cursor.execute(
+        """
+        SELECT quadro_id, tipo, x, y, trajetoria, duracao, ref
+        FROM utilitarios_quadro WHERE quadro_id = ANY(%s) ORDER BY id
+        """,
+        (quadro_ids,),
+    ).fetchall():
+        utilitario = {"tipo": tipo, "x": x, "y": y, "trajetoria": trajetoria, "duracao": duracao}
+        if com_ref:
+            utilitario["ref"] = ref
+        conteudo[quadro_id]["utilitarios"].append(utilitario)
+    for quadro_id, jogador_id, pontos, status in cursor.execute(
+        "SELECT quadro_id, jogador_id, pontos, status FROM tracos WHERE quadro_id = ANY(%s) ORDER BY id",
+        (quadro_ids,),
+    ).fetchall():
+        conteudo[quadro_id]["tracos"].append({"jogador_id": jogador_id, "pontos": pontos, "status": status})
+    return conteudo
+
+
 def _buscar(cursor, usuario_id: int, tatica_id: int) -> dict:
     linha = cursor.execute(
         f"SELECT {_COLUNAS_RESUMO}, t.criada_em FROM taticas t WHERE t.id = %s AND t.usuario_id = %s",
@@ -61,46 +94,11 @@ def _buscar(cursor, usuario_id: int, tatica_id: int) -> dict:
         raise TaticaNaoEncontrada
     tatica = _resumo(linha[:6])
     tatica["criada_em"] = linha[6]
-    posicoes = cursor.execute(
-        """
-        SELECT p.jogador_id, p.funcao_id, p.x, p.y
-        FROM posicoes_quadro p
-        JOIN quadros q ON q.id = p.quadro_id
-        WHERE q.tatica_id = %s AND q.sequencia_id IS NULL
-        ORDER BY p.id
-        """,
-        (tatica_id,),
-    ).fetchall()
-    tatica["posicoes"] = [
-        {"jogador_id": jogador_id, "funcao_id": funcao_id, "x": x, "y": y} for jogador_id, funcao_id, x, y in posicoes
-    ]
-    utilitarios = cursor.execute(
-        """
-        SELECT u.tipo, u.x, u.y, u.trajetoria, u.duracao
-        FROM utilitarios_quadro u
-        JOIN quadros q ON q.id = u.quadro_id
-        WHERE q.tatica_id = %s AND q.sequencia_id IS NULL
-        ORDER BY u.id
-        """,
-        (tatica_id,),
-    ).fetchall()
-    tatica["utilitarios"] = [
-        {"tipo": tipo, "x": x, "y": y, "trajetoria": trajetoria, "duracao": duracao}
-        for tipo, x, y, trajetoria, duracao in utilitarios
-    ]
-    tracos = cursor.execute(
-        """
-        SELECT t.jogador_id, t.pontos, t.status
-        FROM tracos t
-        JOIN quadros q ON q.id = t.quadro_id
-        WHERE q.tatica_id = %s AND q.sequencia_id IS NULL
-        ORDER BY t.id
-        """,
-        (tatica_id,),
-    ).fetchall()
-    tatica["tracos"] = [
-        {"jogador_id": jogador_id, "pontos": pontos, "status": status} for jogador_id, pontos, status in tracos
-    ]
+    quadro = cursor.execute(
+        "SELECT id FROM quadros WHERE tatica_id = %s AND sequencia_id IS NULL", (tatica_id,)
+    ).fetchone()
+    vazio = {"posicoes": [], "utilitarios": [], "tracos": []}
+    tatica.update(conteudo_quadros(cursor, [quadro[0]])[quadro[0]] if quadro else vazio)
     return tatica
 
 
@@ -110,7 +108,7 @@ def buscar_tatica(usuario_id: int, tatica_id: int) -> dict:
             return _buscar(cursor, usuario_id, tatica_id)
 
 
-def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict], tracos: list[dict]) -> None:
+def conferir_conteudo(cursor, usuario_id: int, posicoes: list[dict], tracos: list[dict]) -> None:
     """Funções precisam existir e jogadores (das posições e dos traços) precisam ser do
     próprio usuário (RNF03)."""
     funcoes = {p["funcao_id"] for p in posicoes if p["funcao_id"] is not None}
@@ -131,8 +129,41 @@ def _conferir_posicoes(cursor, usuario_id: int, posicoes: list[dict], tracos: li
             raise JogadorInvalido
 
 
+def gravar_conteudo(cursor, quadro_id: int, posicoes: list[dict], utilitarios: list[dict], tracos: list[dict]) -> None:
+    """Insere posições, utilitários e traços num quadro vazio."""
+    if posicoes:
+        cursor.executemany(
+            "INSERT INTO posicoes_quadro (quadro_id, jogador_id, funcao_id, x, y) VALUES (%s, %s, %s, %s, %s)",
+            [(quadro_id, p["jogador_id"], p["funcao_id"], p["x"], p["y"]) for p in posicoes],
+        )
+    if utilitarios:
+        cursor.executemany(
+            """
+            INSERT INTO utilitarios_quadro (quadro_id, tipo, x, y, trajetoria, duracao, ref)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    quadro_id,
+                    u["tipo"],
+                    u["x"],
+                    u["y"],
+                    None if u["trajetoria"] is None else Jsonb([list(p) for p in u["trajetoria"]]),
+                    u["duracao"],
+                    u.get("ref"),
+                )
+                for u in utilitarios
+            ],
+        )
+    if tracos:
+        cursor.executemany(
+            "INSERT INTO tracos (quadro_id, jogador_id, pontos, status) VALUES (%s, %s, %s, %s)",
+            [(quadro_id, t["jogador_id"], Jsonb([list(p) for p in t["pontos"]]), t["status"]) for t in tracos],
+        )
+
+
 def _gravar_plano(cursor, tatica_id: int, posicoes: list[dict], utilitarios: list[dict], tracos: list[dict]) -> None:
-    """Substitui posições, utilitários e traços do plano fixo."""
+    """Substitui posições, utilitários e traços do plano fixo. No plano fixo não há ref."""
     quadro = cursor.execute(
         "SELECT id FROM quadros WHERE tatica_id = %s AND sequencia_id IS NULL", (tatica_id,)
     ).fetchone()
@@ -145,31 +176,7 @@ def _gravar_plano(cursor, tatica_id: int, posicoes: list[dict], utilitarios: lis
         cursor.execute("DELETE FROM posicoes_quadro WHERE quadro_id = %s", (quadro_id,))
         cursor.execute("DELETE FROM utilitarios_quadro WHERE quadro_id = %s", (quadro_id,))
         cursor.execute("DELETE FROM tracos WHERE quadro_id = %s", (quadro_id,))
-    if posicoes:
-        cursor.executemany(
-            "INSERT INTO posicoes_quadro (quadro_id, jogador_id, funcao_id, x, y) VALUES (%s, %s, %s, %s, %s)",
-            [(quadro_id, p["jogador_id"], p["funcao_id"], p["x"], p["y"]) for p in posicoes],
-        )
-    if utilitarios:
-        cursor.executemany(
-            "INSERT INTO utilitarios_quadro (quadro_id, tipo, x, y, trajetoria, duracao) VALUES (%s, %s, %s, %s, %s, %s)",
-            [
-                (
-                    quadro_id,
-                    u["tipo"],
-                    u["x"],
-                    u["y"],
-                    None if u["trajetoria"] is None else Jsonb([list(p) for p in u["trajetoria"]]),
-                    u["duracao"],
-                )
-                for u in utilitarios
-            ],
-        )
-    if tracos:
-        cursor.executemany(
-            "INSERT INTO tracos (quadro_id, jogador_id, pontos, status) VALUES (%s, %s, %s, %s)",
-            [(quadro_id, t["jogador_id"], Jsonb([list(p) for p in t["pontos"]]), t["status"]) for t in tracos],
-        )
+    gravar_conteudo(cursor, quadro_id, posicoes, [{**u, "ref": None} for u in utilitarios], tracos)
 
 
 def criar_tatica(
@@ -186,7 +193,7 @@ def criar_tatica(
     """Cria a tática com o plano fixo numa única transação."""
     with _conectar() as conexao:
         with conexao.cursor() as cursor:
-            _conferir_posicoes(cursor, usuario_id, posicoes, tracos)
+            conferir_conteudo(cursor, usuario_id, posicoes, tracos)
             tatica_id = cursor.execute(
                 """
                 INSERT INTO taticas (usuario_id, mapa_id, nome, lado, visibilidade)
@@ -220,7 +227,7 @@ def atualizar_tatica(
             ).fetchone()
             if existe is None:
                 raise TaticaNaoEncontrada
-            _conferir_posicoes(cursor, usuario_id, posicoes, tracos)
+            conferir_conteudo(cursor, usuario_id, posicoes, tracos)
             cursor.execute(
                 """
                 UPDATE taticas

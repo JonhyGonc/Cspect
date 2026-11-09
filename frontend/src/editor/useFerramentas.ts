@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Ponto } from "./coordenadas";
 import type { Plano } from "./plano";
 import {
+  ajustarDuracao,
   criarUtilitario,
   PONTOS_TRACO_MAX,
   PONTOS_TRAJETORIA_MAX,
@@ -102,6 +103,18 @@ export function useFerramentas({ plano, alterar, jogadorPadrao }: Opcoes) {
         ? { ...atual, utilitarios: atual.utilitarios.map((u, i) => (i === indice ? trocarTipo(u, tipo) : u)) }
         : atual,
     );
+  }
+
+  // Duração ajustável de smoke e molotov (RF11); a faixa da linha do tempo acompanha.
+  function ajustarDuracaoUtilitario(indice: number, segundos: number) {
+    alterar((atual) => {
+      const utilitario = atual.utilitarios[indice];
+      if (!utilitario || !Number.isFinite(segundos)) return atual;
+      const ajustado = ajustarDuracao(utilitario, segundos);
+      return ajustado === utilitario
+        ? atual
+        : { ...atual, utilitarios: atual.utilitarios.map((u, i) => (i === indice ? ajustado : u)) };
+    });
   }
 
   function definirTrajetoria(indice: number, pontos: Ponto[]) {
@@ -205,6 +218,7 @@ export function useFerramentas({ plano, alterar, jogadorPadrao }: Opcoes) {
     colocar,
     moverUtilitario,
     trocarTipoUtilitario,
+    ajustarDuracaoUtilitario,
     definirTrajetoria,
     removerTrajetoria,
     finalizarTraco,
